@@ -112,31 +112,21 @@ The framework ships a set of declarative ring-rendering primitives in
 - Flash management with wear levelling — declare a data model to save
 - CV input, summed with pot position and parameter lock at the
   composition site
-- Two clock primitives:
-  - `ClockPll` — tempo-meter PLL for modules that only want a BPM
-    number.
-  - `MusicalClock` + `ClockFollower` — free-running NCO timeline plus
-    PI-PLL follower for phase-aware, bar-aware, click-free synced
-    audio.  Tuning constants are documented in the headers
-    (`alchemy/control/musical_clock.h`); see
-    [`clock_sync`](examples/clock_sync/clock_sync.cpp) for a minimal
-    wiring example.
-- **Per-board DAC/ADC calibration (V2)** — self-calibrating CV jacks,
-  no external equipment.  See [Calibration](#calibration-v2-boards)
-  below.
-- Calibrated CV output — `SetCvOutVolts()` / `RouteCvOut()` drive any
-  V2 jack to a precise voltage through the per-board calibration;
-  `cv[i].Volts()` reads true jack volts in.
+- Two clock primitives,`ClockPll` and `MusicalClock` + `ClockFollower`
+- Self DAC/ADC calibration. See [Calibration](#calibration-v2-boards)
 
 ### Planned TODO
 
 - Field-programmable Jack CV I/O configuration and example
 - Expansion-header support/pinout documentation
 - CV out of codec via DC coupling
+- Custom board bootloader (boot LED animation + name)
+- Flash firmware via front USB + button
+
+Post release scope:
 - Better QSPI safe read/write helpers (don't step on used regions)
 - USB PC connection
 - MIDI implementation example
-- Custom board bootloader (boot LED animation + name)
 
 ## Bootloader Information
 
