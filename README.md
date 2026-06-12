@@ -79,11 +79,18 @@ cmake --build --preset arm
 
 ### Flash an example
 
-Put the module in DFU mode with the Daisy bootloader, reboot and you have two seconds. To extend this, press "RESET" during the "breathing animation" bootloader window. 
+Connect the front USB-C port and put the module in update mode: press
+**B1 or B2** during the ~2 s bootloader window after power-on (rings
+spin a warm-white comet), or simply hold one of them while powering on.
+The rings switch to a slow breathe with the B1/B2 LEDs lit, and the
+module stays in DFU mode until it's flashed or reset. Then:
 
 ```sh
 cmake --build --preset arm --target stereo_eq-flash
 ```
+
+Flashing also works without the button press if `dfu-util` starts
+inside the 2 s window.
 
 Other examples flash the same way, e.g. `kick-flash`, `clock_sync-flash`,
 `v2_cal_test-flash`, `v2_cv_demo-flash`.
@@ -114,14 +121,14 @@ The framework ships a set of declarative ring-rendering primitives in
   composition site
 - Two clock primitives,`ClockPll` and `MusicalClock` + `ClockFollower`
 - Self DAC/ADC calibration. See [Calibration](#calibration-v2-boards)
+- Custom board bootloader (panel LED animations + `Alchemy Lab` USB name)
+- Flash firmware via front USB-C + button (B1/B2 latch update mode)
 
 ### Planned TODO
 
 - Field-programmable Jack CV I/O configuration and example
 - Expansion-header support/pinout documentation
 - CV out of codec via DC coupling
-- Custom board bootloader (boot LED animation + name)
-- Flash firmware via front USB + button
 
 Post release scope:
 - Better QSPI safe read/write helpers (don't step on used regions)
@@ -130,7 +137,19 @@ Post release scope:
 
 ## Bootloader Information
 
-TODO - add this repo.
+Alchemy Lab V2 boards run a board-specific fork of the Daisy bootloader
+(`DaisyBootloader-AlchemyLabV2`). It serves DFU on the front-panel
+USB-C port, renders
+bootloader state on the panel, and latches into update mode
+when B1 or B2 is pressed during the boot window.
+Apps built with this SDK can also enter update mode programmatically:
+
+```cpp
+daisy::System::ResetToBootloader(
+    daisy::System::BootloaderMode::DAISY_INFINITE_TIMEOUT);
+```
+
+This could be used to support multiple firmwares in flash at once without requiring a reflash as a future feature.
 
 ## Calibration (V2 boards)
 
