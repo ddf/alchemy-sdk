@@ -97,7 +97,7 @@ starting point for your own module firmware.
 ## Animation library
 
 The framework ships a set of declarative ring-rendering primitives in
-[`alchemy::led`](framework/include/alchemy/led/anims):
+[`alchemy::led`](framework/include/alchemy/led/anims)
 
 ## Features
 
@@ -131,14 +131,12 @@ The framework ships a set of declarative ring-rendering primitives in
 ### Planned TODO
 
 - Field-programmable Jack CV I/O configuration and example
-- SD card support (just note to use Daisy primitives)
 - Expansion-header support/pinout documentation
 - CV out of codec via DC coupling
 - Better QSPI safe read/write helpers (don't step on used regions)
 - USB PC connection
 - MIDI implementation example
-- Custom board bootloader (boot LED animation — cosmetic only;
-  calibration does not depend on it)
+- Custom board bootloader (boot LED animation + name)
 
 ## Bootloader Information
 
