@@ -28,7 +28,7 @@
 
 namespace alchemy {
 
-/* ── Tuning constants (see docs/clock_spec.md §6) ──────────────────────── */
+/* ── Tuning constants (values from clock bring-up; see musical_clock.h) ── */
 
 /** EMA smoothing for the period estimator. */
 constexpr float    kClockEmaAlpha          = 0.15f;

@@ -1,6 +1,6 @@
 /**
  * @file musical_clock.h
- * @brief Free-running, monotonic musical timeline (NCO).  See docs/clock_spec.md.
+ * @brief Free-running, monotonic musical timeline (NCO).
  *
  * `MusicalClock` is a numerically-controlled oscillator that integrates a
  * **rate** every control tick and emits musical position (bar / beat /
@@ -30,7 +30,7 @@
 
 namespace alchemy {
 
-/* ── Constants (see docs/clock_spec.md §6) ─────────────────────────────── */
+/* ── Constants ─────────────────────────────────────────────────────────── */
 
 /** Internal timeline resolution.  Divisible by 24, 16, 12, 8, 6, 4, 3, 2 so
  *  every straight, triplet, and dotted subdivision lands on an exact

@@ -20,8 +20,8 @@
 #
 # What auxiliary targets it adds:
 #   <name>-size   prints arm-none-eabi-size memory summary for <name>.elf
-#   <name>-flash  uploads <name>.bin to QSPI via dfu-util (see FLASHING in
-#                 README.md for the boot-button procedure required first)
+#   <name>-flash  uploads <name>.bin to QSPI via dfu-util (see "Flash an
+#                 example" in README.md for the boot-button procedure)
 #
 # This file is included only when cross-compiling.  In host builds it is
 # not loaded and daisy_executable() is undefined — host targets continue
@@ -142,16 +142,18 @@ function(daisy_executable)
     target_compile_definitions(${ARG_NAME} PRIVATE BOOT_APP)
 
     # ── Linker flags ──────────────────────────────────────────────────────
-    # Primary linker first, then each supplementary fragment — order
-    # matches Make's `LDFLAGS += -T <primary> -T <fragment>` and lets
-    # `INSERT BEFORE` directives in fragments find their anchor sections
-    # in the primary.
-    set(_linker_flags
-        LINKER:-T,${_ALCHEMY_QSPI_LINKER_SCRIPT}
-    )
+    # Supplementary fragments FIRST, primary script second. GNU ld ≥ 2.45
+    # (Arm GNU Toolchain 15.2) errors with ".heap not found for insert"
+    # when an `INSERT BEFORE` fragment appears after the primary `-T`
+    # script; fragment-first resolves the anchor and places the section
+    # correctly (verified: .ahb_sram_bss at RAM_D2 base, .heap after).
+    # Older binutils accepted either order, so this stays compatible with
+    # Make flows that use `-T <fragment>` ahead of the primary.
+    set(_linker_flags "")
     foreach(_fragment IN LISTS _ALCHEMY_LINKER_FRAGMENTS)
         list(APPEND _linker_flags LINKER:-T,${_fragment})
     endforeach()
+    list(APPEND _linker_flags LINKER:-T,${_ALCHEMY_QSPI_LINKER_SCRIPT})
     target_link_options(${ARG_NAME} PRIVATE
         ${_linker_flags}
         LINKER:--gc-sections

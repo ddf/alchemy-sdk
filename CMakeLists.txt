@@ -62,4 +62,5 @@ add_subdirectory(framework)
 add_subdirectory(examples/stereo_eq)
 add_subdirectory(examples/kick)
 add_subdirectory(examples/clock_sync)
-add_subdirectory(examples/alchemy_lab_v2_bringup)  # cross-compile only
+add_subdirectory(examples/v2_cv_demo)   # cross-compile + V2 only
+add_subdirectory(examples/v2_cal_test)  # cross-compile + V2 only

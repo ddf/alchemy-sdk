@@ -39,17 +39,18 @@ formats may change before the first stable release. I (Luke at Hermetic Modular)
 
 [`stereo_eq.cpp`](examples/stereo_eq/stereo_eq.cpp) is an excellent
 place to start: it opts into most Alchemy Framework features,
-demonstrating how to build a fully featured module by bringing your own
-DSP.
+demonstrating how to build a fully featured module by bringing your own DSP.
+
+The below build and requirements work with this repo, and the examples within. For a typical project, you'd clone and use the quick template below. 
+
+> ➡️ [Go to the Quick Template](#Quick-template)
 
 ### Requirements
-
-TODO: Verify with fresh install.
 
 - `git`
 - `cmake` ≥ 3.21
 - `ninja`
-- `arm-none-eabi-gcc` 13.x
+- `arm-none-eabi-gcc` ≥ 12
 - `dfu-util`
 
 #### Install the toolchain
@@ -72,22 +73,20 @@ brew install --cask gcc-arm-embedded
 ```sh
 git clone --recurse-submodules https://github.com/hermetic-modular/alchemy-sdk.git
 cd alchemy-sdk
-cmake -B build-arm -G Ninja \
-      -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/stm32h750xx.cmake
-cmake --build build-arm
+cmake --preset arm
+cmake --build --preset arm
 ```
 
 ### Flash an example
 
-TODO - Verify
-
 Put the module in DFU mode with the Daisy bootloader, reboot and you have two seconds. To extend this, press "RESET" during the "breathing animation" bootloader window. 
 
 ```sh
-cmake --build build-arm --target stereo_eq-flash
+cmake --build --preset arm --target stereo_eq-flash
 ```
 
-Other examples flash the same way, e.g. `kick-flash`.
+Other examples flash the same way, e.g. `kick-flash`, `clock_sync-flash`,
+`v2_cal_test-flash`, `v2_cv_demo-flash`.
 
 ## Quick template
 
@@ -118,13 +117,19 @@ The framework ships a set of declarative ring-rendering primitives in
     number.
   - `MusicalClock` + `ClockFollower` — free-running NCO timeline plus
     PI-PLL follower for phase-aware, bar-aware, click-free synced
-    audio.  Specified in [`docs/clock_spec.md`](docs/clock_spec.md);
-    see [`clock_sync`](examples/clock_sync/clock_sync.cpp) for a
-    minimal wiring example.
+    audio.  Tuning constants are documented in the headers
+    (`alchemy/control/musical_clock.h`); see
+    [`clock_sync`](examples/clock_sync/clock_sync.cpp) for a minimal
+    wiring example.
+- **Per-board DAC/ADC calibration (V2)** — self-calibrating CV jacks,
+  no external equipment.  See [Calibration](#calibration-v2-boards)
+  below.
+- Calibrated CV output — `SetCvOutVolts()` / `RouteCvOut()` drive any
+  V2 jack to a precise voltage through the per-board calibration;
+  `cv[i].Volts()` reads true jack volts in.
 
 ### Planned TODO
 
-- Calibration usage and abstraction.
 - Field-programmable Jack CV I/O configuration and example
 - SD card support (just note to use Daisy primitives)
 - Expansion-header support/pinout documentation
@@ -132,18 +137,52 @@ The framework ships a set of declarative ring-rendering primitives in
 - Better QSPI safe read/write helpers (don't step on used regions)
 - USB PC connection
 - MIDI implementation example
+- Custom board bootloader (boot LED animation — cosmetic only;
+  calibration does not depend on it)
 
-### Bootloader TODO
+## Bootloader Information
 
-Add the custom board bootloaders
+TODO - add this repo.
 
-### Calibration TODO
+## Calibration (V2 boards)
 
-Note and link to calibration instructions in bootloader.
+Every V2 board self-calibrates its six CV jacks — DAC out and ADC in —
+with no external equipment, using the board's built-in DAC→jack→ADC
+loopback and the STM32's factory voltage reference.
 
-### Different board versions and build instructions TODO
+**To calibrate:** unpatch all CV jacks, then hold **B1 + B2** while the
+board resets.  The LED panel narrates the ~15 s procedure (rings fill
+as each jack is swept), flashes green on success, and the board reboots
+calibrated.  The result is a 120-byte record in a dedicated QSPI sector
+that **survives firmware reflashes** — calibrate once per board, every
+SDK firmware picks it up automatically.
 
-Explain V1 board, V2 board
+**Using it** is invisible: `hw.SetCvOutVolts(jack, volts)` and
+`hw.cv[jack].Volts()` apply the calibration transparently, and fall
+back to design-nominal scaling when no record exists
+(`hw.IsCalibrated()` tells you which).  See
+[`v2_calibration.h`](hardware/alchemy-lab/v2/include/alchemy/hw/v2_calibration.h)
+and [`v2_factory_cal.h`](hardware/alchemy-lab/v2/include/alchemy/hw/v2_factory_cal.h)
+for the details, and
+[`examples/v2_cal_test`](examples/v2_cal_test/v2_cal_test.cpp) for a
+scope-driven acceptance test (step −5..+5 V, toggle calibration live).
+
+## Board versions
+
+Two Alchemy Lab board revisions are supported, selected by preset:
+
+```sh
+cmake --preset arm      # V2 (the default)
+cmake --preset arm-v1   # V1
+```
+
+(Equivalent to setting `-DALCHEMY_BOARD=v2|v1` by hand.)
+
+- **v1** — original dev board. You probably don't have one of these unless you were an alpha tester.
+- **v2** — The standard production board shipped by Hermetic Modular.
+
+V2-only examples (`v2_cal_test`, `v2_cv_demo`) build only when
+`ALCHEMY_BOARD=v2`. V1 doesn't have CV out.
 
 ## License
 

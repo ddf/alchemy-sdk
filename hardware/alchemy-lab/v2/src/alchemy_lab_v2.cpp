@@ -8,6 +8,7 @@
  */
 
 #include "alchemy/hw/alchemy_lab_v2.h"
+#include "alchemy/hw/v2_factory_cal.h"
 
 #include "ff.h"
 
@@ -24,6 +25,20 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
     sample_rate_hz_ = seed.AudioSampleRate();
     block_size_     = seed.AudioBlockSize();
 
+    /* 1b) Factory calibration hook — B1 + B2 held through boot. Must run
+     *     BEFORE the DMA ADC starts: the cal procedure uses its own
+     *     one-shot bare-metal ADC configuration on the same pins. The
+     *     procedure persists to QSPI and soft-resets; it never returns. */
+    if (V2FactoryCalRequested())
+        V2RunFactoryCalibrationAndReset(*this);
+
+    /* 1c) Load the per-board cal record from memory-mapped QSPI. On any
+     *     validation failure fall back to design constants — user code
+     *     keeps working, IsCalibrated() reports the difference. */
+    cal_loaded_ = V2CalLoadFromQspi(cal_);
+    if (!cal_loaded_)
+        V2CalDesignFallback(cal_);
+
     /* 2) ADC: 6 pot channels followed by 6 CV channels ─────────────────── */
     daisy::AdcChannelConfig adcCfg[kNumPots + kNumCvInputs];
     for (uint8_t i = 0; i < kNumPots; i++)
@@ -37,8 +52,14 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
     for (uint8_t i = 0; i < kNumPots; i++)
         pots[i].Init(seed.adc.GetPtr(i), sr, kPotPolarityFlipped, false, 0.0f);
     for (uint8_t i = 0; i < kNumCvInputs; i++)
+    {
         cv[i].Init(seed.adc.GetPtr(kCvAdcOffset + i), sr, /*flip=*/true,
                    /*invert=*/false, /*slew=*/0.0f);
+        /* Per-channel zero + board VDDA. With the design-fallback record
+         * this reproduces the uncalibrated transfer exactly, so it is
+         * applied unconditionally. */
+        cv[i].SetCalibration(cal_.jack[i].adc_zero_code, cal_.vdda_at_cal);
+    }
 
     /* 3) On-MCU buttons (B1, B2) ──────────────────────────────────────── */
     for (uint8_t i = 0; i < kNumOnMcuButtons; i++)
@@ -60,11 +81,10 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
     /* 6) MCP4728 quad DAC: probe on I²C, seed all four channels to
      *    mid-scale (0 V at the panel after the ±5 V conditioning), pulse
      *    LDAC through the expander to latch the outputs. */
-    bool mcp4728_ready = false;
     if (i2c_ready_)
     {
-        mcp4728_ready = dac.Init(i2c, kMcp4728AddrFirst, kMcp4728AddrLast);
-        if (mcp4728_ready && expander_ready_)
+        mcp4728_ready_ = dac.Init(i2c, kMcp4728AddrFirst, kMcp4728AddrLast);
+        if (mcp4728_ready_ && expander_ready_)
             dac.PulseLdac(expander, kPca9557IoLdac);
     }
 
@@ -85,9 +105,9 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
         dac_cfg.mode              = daisy::DacHandle::Mode::POLLING;
         dac_cfg.bitdepth          = daisy::DacHandle::BitDepth::BITS_12;
         dac_cfg.buff_state        = daisy::DacHandle::BufferState::ENABLED;
-        const bool stm_dac_ready =
+        stm_dac_ready_ =
             (stm_dac.Init(dac_cfg) == daisy::DacHandle::Result::OK);
-        if (stm_dac_ready)
+        if (stm_dac_ready_)
         {
             stm_dac.WriteValue(daisy::DacHandle::Channel::ONE, 2048u);
             stm_dac.WriteValue(daisy::DacHandle::Channel::TWO, 2048u);
@@ -117,6 +137,53 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
             (void)f_mount(&fatfs.GetSDFileSystem(), fatfs.GetSDPath(), 0);
         }
     }
+}
+
+bool AlchemyLabV2::SetCvOutVolts(uint8_t jack, float volts)
+{
+    if (jack >= kNumDacOuts)
+        return false;
+
+    /* Invert the per-jack linear fit, clamp to the measured linear range
+     * (rail-saturation bounds from the cal sweep; full range on the
+     * design fallback). */
+    const V2JackCal& jc = cal_.jack[jack];
+    float code_f = (volts - jc.dac_offset_v) / jc.dac_gain_v_per_code;
+    if (code_f < static_cast<float>(jc.dac_min_linear_code))
+        code_f = static_cast<float>(jc.dac_min_linear_code);
+    if (code_f > static_cast<float>(jc.dac_max_linear_code))
+        code_f = static_cast<float>(jc.dac_max_linear_code);
+    const uint16_t code = static_cast<uint16_t>(code_f + 0.5f);
+
+    const DacRoute& route = kDacRouting[jack];
+    const uint8_t   src   = static_cast<uint8_t>(route.source);
+
+    if (src < kMcp4728NumChannels)  /* MCP4728 A..D */
+    {
+        if (!mcp4728_ready_ || !expander_ready_)
+            return false;
+        mcp_shadow_[src] = code;
+        if (!dac.WriteAll(mcp_shadow_[0], mcp_shadow_[1],
+                          mcp_shadow_[2], mcp_shadow_[3]))
+            return false;
+        return dac.PulseLdac(expander, kPca9557IoLdac);
+    }
+
+    /* STM32 DAC1 ch1 / ch2 */
+    if (!stm_dac_ready_)
+        return false;
+    stm_dac.WriteValue((src == 4u) ? daisy::DacHandle::Channel::ONE
+                                   : daisy::DacHandle::Channel::TWO,
+                       code);
+    return true;
+}
+
+bool AlchemyLabV2::RouteCvOut(uint8_t jack, bool enable)
+{
+    if (jack >= kNumDacOuts || !expander_ready_)
+        return false;
+    return expander.SetOutputBit(kDacRouting[jack].select_io,
+                                 enable ? kDg411OnLevel : !kDg411OnLevel);
 }
 
 void AlchemyLabV2::ProcessAllControls()

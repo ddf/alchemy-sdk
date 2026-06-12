@@ -46,9 +46,8 @@ constexpr bool kPotPolarityFlipped = true;
  * Inverting summer (MCP6004 on +3V3A) per channel:
  *   V_pin = 1.65 V − 0.165 × V_jack
  * High ADC code = negative jack voltage. The 1.65 V bias is set by the
- * −10 V reference + R ratio, NOT by VDDA/2. The legacy `kCvZeroNorm =
- * 0.5` constant below is the design-nominal "ratio of VDDA at 3.30 V"
- * value; for accurate volts use the calibrated SDK path.
+ * −10 V reference + R ratio, NOT by VDDA/2. Volts come from the
+ * calibrated path (cv[i].Volts() — see v2_calibration.h).
  *
  * Per-jack ADC mapping:
  *
@@ -85,16 +84,6 @@ constexpr uint32_t kCvAdc1Channels[kNumCvInputs] = {
     7u,   /* J7  PA7 */
     11u,  /* J8  PC1 */
 };
-
-/**
- * DESIGN-NOMINAL normalised ADC reading at V_jack = 0 V, assuming
- * VDDA = 3.30 V exactly. Real V_pin at idle is 1.65 V regardless of
- * VDDA, so the ratio drifts with the LDO. Use the calibrated SDK path
- * for accurate volts — this constant is for legacy/uncalibrated paths.
- */
-constexpr float kCvZeroNorm = 0.5f;
-
-inline float CvToBipolar(float cv_norm) { return cv_norm - kCvZeroNorm; }
 
 /* ========================================================================= */
 /*  Buttons                                                                   */
