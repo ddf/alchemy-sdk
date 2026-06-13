@@ -166,7 +166,7 @@ void ClockFollower::Update(uint32_t now_us)
     {
         /* Outside the validity window: treat as a restart, not a missed
          * pulse.  Clear state, reseed from this pulse — same as the
-         * existing ClockPll behaviour. */
+         * existing ClockPll behavior. */
         locked_            = false;
         loss_announced_    = false;
         valid_pulse_count_ = 1u;

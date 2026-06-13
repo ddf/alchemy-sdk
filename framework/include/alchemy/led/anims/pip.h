@@ -16,7 +16,7 @@
  *                     tails one step further out on each side.  ~0.2 is
  *                     enough to soften fast motion without smearing.
  *   background      — when not {0,0,0}, every step on the arc is first
- *                     filled with this colour and the pip is blended on
+ *                     filled with this color and the pip is blended on
  *                     top.  Leaves underlying pixels untouched at {0,0,0}
  *                     so the pip can layer over another animation.
  *

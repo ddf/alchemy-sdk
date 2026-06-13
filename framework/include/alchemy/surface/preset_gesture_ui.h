@@ -60,8 +60,8 @@ constexpr float kPresetNeutralHi     =   0.70f;
 
 /* ── Slot-indicator visual style ─────────────────────────────────────── */
 
-/** Default colour palette for the slot indicator — four cool-to-warm
- *  groups covering 16 slots (slot/4 → colour, slot%4 → arc count). */
+/** Default color palette for the slot indicator — four cool-to-warm
+ *  groups covering 16 slots (slot/4 → color, slot%4 → arc count). */
 constexpr SlotIndicatorStyle kPresetSlotIndicatorDefault = {{
     {0x40, 0x80, 0xFF},
     {0x40, 0xE0, 0x60},
@@ -99,10 +99,10 @@ class PresetGestureUi
                 LedPanel::Rgb progress_color = {0xFF, 0x40, 0x00},
                 LedPanel::Rgb flash_color    = {0xFF, 0xFF, 0xFF}) const;
 
-    /** Slot-indicator colour groups. */
-    void SetSlotIndicatorColors(const SlotIndicatorStyle& colours)
+    /** Slot-indicator color groups. */
+    void SetSlotIndicatorColors(const SlotIndicatorStyle& colors)
     {
-        slot_indicator_style_ = colours;
+        slot_indicator_style_ = colors;
     }
 
     /**

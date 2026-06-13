@@ -43,7 +43,7 @@ demonstrating how to build a fully featured module by bringing your own DSP.
 
 The below build and requirements work with this repo, and the examples within. For a typical project, you'd clone and use the quick template below. 
 
-> ➡️ [Go to the Quick Template](#quick-template)
+> ➡️ [Quick Template](#quick-template)
 
 ### Requirements
 
@@ -93,7 +93,7 @@ Flashing also works without the button press if `dfu-util` starts
 inside the 2 s window.
 
 Other examples flash the same way, e.g. `kick-flash`, `clock_sync-flash`,
-`v2_cal_test-flash`, `v2_cv_demo-flash`.
+`v2_cal_test-flash`, `v2_cv_demo-flash`, `cv_playground-flash`.
 
 ## Quick template
 
@@ -102,39 +102,34 @@ for a project skeleton that vendors the Alchemy SDK and libDaisy as git
 submodules.  This is the recommended starting point for your own module
 firmware.
 
-## Animation library
+## Working with CV and Jacks
 
-The framework ships a set of declarative ring-rendering primitives in
-[`alchemy::led`](framework/include/alchemy/led/anims)
+There are ten jacks total. The middle six are field programmable to be CV in or out. The other four are the audio codec stereo in and out. These can be repurposed for CV in and out, with some caveats.
 
-## Features
+See [`cv_playground.cpp`](examples/stereo_eq/cv_playground.cpp) for all of these in practice.
 
-### Done
+**J1, J2** are codec audio inputs, AC-coupled. AC coupling blocks DC so absolute voltage can't be read, but rising edges pass cleanly, allowing for clocks and triggers. Use `RisingEdge()`. A use case may be you have a module that does not process input audio, in which case you could use these jacks for trigger inputs, to free up the other switchable jacks. Theoretically you could also set a low trigger threshold and get gate signals up to the length it takes the AC cap to debias the DC signal - some testing is required to see how long these gates could be.
 
-- A bunch of pot animations — Pulse, Ripple, level meter, color morph,
-  selector
-- Param lock — looping automation, per-pot
-- Pagination and pot catch
-- The settings gesture and comprehensive settings experience
-- The preset saving and loading UX
-- Flash management with wear levelling — declare a data model to save
-- CV input, summed with pot position and parameter lock at the
-  composition site
-- Two clock primitives,`ClockPll` and `MusicalClock` + `ClockFollower`
-- Self DAC/ADC calibration. See [Calibration](#calibration-v2-boards)
-- Custom board bootloader (panel LED animations + `Alchemy Lab` USB name)
-- Flash firmware via front USB-C + button (B3 latch update mode)
+**J3–J8** are the field programmable jacks. They can be mode changed with `EnableCvOutput()` closes an analog switch to route the backing DAC (MCP4728 on J3–J6, STM DAC1 on J7–J8) onto the panel; `DisableCvOutput()` disconnects the DAC. This can be set at boot or changed live for unique firmware development opportunities.
 
-### Planned TODO
+**J9, J10** are codec audio outputs, DC-coupled. `EnableCvOutput()` claims that codec channel from your audio callback and fills it with the `SetVolts()` target every block — the highest precision on the board (24-bit), at audio-block update rate.
 
-- Field-programmable Jack CV I/O configuration and example
-- Expansion-header support/pinout documentation
-- CV out of codec via DC coupling
+### Jack reference
 
-Post release scope:
-- Better QSPI safe read/write helpers (don't step on used regions)
-- USB PC connection
-- MIDI implementation example
+| Jack | Type | Output bits | Output latency | Input bits | Input latency | How to change |
+|------|------|-------------|----------------|------------|---------------|---------------|
+| J1 | Codec In | N/A | N/A | 1 | audio block | `SetTriggerThreshold(v)` |
+| J2 | Codec In | N/A | N/A | 1 | audio block | `SetTriggerThreshold(v)` |
+| J3 | Ext Dac | 12 | ~70 µs (I²C) | 16 | audio rate | `Enable/DisableCvOutput()` |
+| J4 | Ext Dac | 12 | ~70 µs (I²C) | 16 | audio rate | `Enable/DisableCvOutput()` |
+| J5 | Ext Dac | 12 | ~70 µs (I²C) | 16 | audio rate | `Enable/DisableCvOutput()` |
+| J6 | Ext Dac | 12 | ~70 µs (I²C) | 16 | audio rate | `Enable/DisableCvOutput()` |
+| J7 | STM Dac | 12 | <1 µs | 16 | audio rate | `Enable/DisableCvOutput()` |
+| J8 | STM Dac | 12 | <1 µs | 16 | audio rate | `Enable/DisableCvOutput()` |
+| J9 | Codec Out | 24 | audio block | N/A | N/A | `Enable/DisableCvOutput()` |
+| J10 | Codec Out | 24 | audio block | N/A | N/A | `Enable/DisableCvOutput()` |
+
+All output ranges are ±5 V at the panel.
 
 ## Bootloader Information
 
@@ -152,9 +147,14 @@ daisy::System::ResetToBootloader(
 
 This could be used to support multiple firmwares in flash at once without requiring a reflash as a future feature.
 
-## Calibration (V2 boards)
+## Animation library
 
-Every V2 board self-calibrates its six CV jacks — DAC out and ADC in —
+The framework ships a set of declarative ring-rendering primitives in
+[`alchemy::led`](framework/include/alchemy/led/anims)
+
+## Calibration
+
+Every production board self-calibrates its six CV jacks — DAC out and ADC in —
 with no external equipment, using the board's built-in DAC→jack→ADC
 loopback and the STM32's factory voltage reference.
 
@@ -165,8 +165,8 @@ calibrated.  The result is a 120-byte record in a dedicated QSPI sector
 that **survives firmware reflashes** — calibrate once per board, every
 SDK firmware picks it up automatically.
 
-**Using it** is invisible: `hw.SetCvOutVolts(jack, volts)` and
-`hw.cv[jack].Volts()` apply the calibration transparently, and fall
+**Using it** is invisible: `hw.j3.SetVolts(volts)` and
+`hw.j3.Volts()` apply the calibration transparently, and fall
 back to design-nominal scaling when no record exists
 (`hw.IsCalibrated()` tells you which).  See
 [`v2_calibration.h`](hardware/alchemy-lab/v2/include/alchemy/hw/v2_calibration.h)
@@ -174,6 +174,42 @@ and [`v2_factory_cal.h`](hardware/alchemy-lab/v2/include/alchemy/hw/v2_factory_c
 for the details, and
 [`examples/v2_cal_test`](examples/v2_cal_test/v2_cal_test.cpp) for a
 scope-driven acceptance test (step −5..+5 V, toggle calibration live).
+
+## Expansion Header
+
+There is an expansion header on the back of the unit. In the future,
+there will be official Hermetic Modular expanders. In the meantime, an
+enterprising developer is welcome to develop their own expander modules.
+
+![Header Render](media/header-pinout.png)
+
+### Header Pinout
+
+Numbered/named pins (`B1`–`B8`) are direct connections to the exposed
+Daisy Seed2 DFM pins, and together expose **SPI1**, an **I²C** bus, and
+**USART1 RX/TX**.
+
+| Pin | Signal | &nbsp; | Pin | Signal |
+| --: | :----- | :----: | --: | :----- |
+|  11 | +12 V  |        |   1 | −12 V  |
+|  12 | GND    |        |   2 | GND    |
+|  13 | GND    |        |   3 | B2     |
+|  14 | GND    |        |   4 | B4     |
+|  15 | 3V3A   |        |   5 | GND    |
+|  16 | GND    |        |   6 | B6     |
+|  17 | GND    |        |   7 | B5     |
+|  18 | GND    |        |   8 | B3     |
+|  19 | GND    |        |   9 | B1     |
+|  20 | B8     |        |  10 | B7     |
+
+## Future implementations
+
+- Expansion-header support/pinout documentation
+
+Post release scope:
+- Better QSPI safe read/write helpers (don't step on used regions)
+- USB PC connection
+- MIDI implementation example
 
 ## Board versions
 
@@ -189,7 +225,7 @@ cmake --preset arm-v1   # V1
 - **v1** — original dev board. You probably don't have one of these unless you were an alpha tester.
 - **v2** — The standard production board shipped by Hermetic Modular.
 
-V2-only examples (`v2_cal_test`, `v2_cv_demo`) build only when
+V2-only examples (`v2_cal_test`, `v2_cv_demo`, `cv_playground`) build only when
 `ALCHEMY_BOARD=v2`. V1 doesn't have CV out.
 
 ## License

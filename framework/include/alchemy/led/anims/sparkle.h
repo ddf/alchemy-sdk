@@ -69,7 +69,7 @@ struct SparkleState
 
 struct SparkleDesc
 {
-    LedPanel::Rgb spark_color     = {0xFF, 0xFF, 0xFF};    ///< Colour of a freshly-spawned sparkle.
+    LedPanel::Rgb spark_color     = {0xFF, 0xFF, 0xFF};    ///< Color of a freshly-spawned sparkle.
     LedPanel::Rgb passive_color   = {0u, 0u, 0u};          ///< Background fill; {0,0,0} = none.
     float         max_rate_hz     = 12.0f;                  ///< Spawn rate (sparkles/sec) at density = 1.
     float         min_brightness  = 0.5f;                   ///< Lower bound of random spawn intensity (0..1).

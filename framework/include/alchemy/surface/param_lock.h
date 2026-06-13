@@ -122,7 +122,7 @@ class ParamLock : public Serializable, public LockSource
 
     /**
      * Optional default overlay: marks rings whose lock is active/recording with
-     * a coloured pip at 6 o'clock.  Recording = red, active = green.
+     * a colored pip at 6 o'clock.  Recording = red, active = green.
      */
     void Render(LedPanel& panel, uint32_t t_ms) const override;
 

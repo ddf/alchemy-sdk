@@ -10,7 +10,7 @@
  *
  *   SHORT period (< threshold): blinking faster than ~16 Hz looks
  *   like a solid glow, so the pip transitions smoothly from the
- *   "on" colour toward the "solid" colour as the period approaches
+ *   "on" color toward the "solid" color as the period approaches
  *   `min_period_ms`.
  *
  * Per-instance state machine; instantiate one per voice / line.
@@ -45,14 +45,14 @@ class BeatPip
     struct Config
     {
         /** Period at and above which the pip blinks (default 60 ms).
-         *  Below this the pip enters the solid-colour-ramp regime. */
+         *  Below this the pip enters the solid-color-ramp regime. */
         float beat_threshold_ms = 60.0f;
 
         /** Max time lit per beat (default 30 ms).  Capped internally
          *  at period/2 so the duty cycle never exceeds 50 %. */
         float on_window_ms      = 30.0f;
 
-        /** Period at which the solid-colour ramp reaches `solid_color`
+        /** Period at which the solid-color ramp reaches `solid_color`
          *  (default 1 ms).  Periods between this and `beat_threshold_ms`
          *  interpolate between `on_color` and `solid_color`. */
         float min_period_ms     = 1.0f;

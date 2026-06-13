@@ -98,7 +98,7 @@ void DrawFill(LedPanel&       dst,
         ArcSnapFrac(side_hard, side_frac, desc.pivot);
 
         /* CCW arm color: sentinel {0,0,0} means "use the same color as the
-         * CW arm" — preserves the single-color behaviour for callers that
+         * CW arm" — preserves the single-color behavior for callers that
          * don't care about per-arm tinting (attenuverters, damping, etc.
          * opt in by passing a non-black neg_color). */
         const bool neg_distinct = (desc.neg_color.r | desc.neg_color.g | desc.neg_color.b) != 0u;

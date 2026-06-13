@@ -88,7 +88,7 @@ struct FillDesc
     LedPanel::Rgb color         = {0xFF, 0xFF, 0xFF};  ///< Active fill / CW arm.
     /**
      * CCW arm color in Center mode.  Sentinel {0,0,0} means "same as `color`"
-     * — preserves single-color behaviour for callers that don't care about
+     * — preserves single-color behavior for callers that don't care about
      * per-arm tinting.  Set to a non-black RGB to paint the CCW arm in its
      * own color (e.g. attenuverter green/red, damping warm/cool).
      */

@@ -7,16 +7,17 @@
  * v2_factory_cal.h, or the standalone `cal_writer` bench firmware) and
  * consumed by the SDK at AlchemyLabV2::Init():
  *
- *   - `SetCvOutVolts()` inverts the per-jack DAC linear fit so a
+ *   - `CvJack::SetVolts()` inverts the per-jack DAC linear fit so a
  *     requested jack voltage lands within ~10 mV on a calibrated board.
- *   - `CvInput::Volts()` applies the per-jack ADC zero + measured VDDA.
+ *   - `CvJack::Volts()` (analog jacks) applies the per-jack ADC zero +
+ *     measured VDDA.
  *
  * QSPI read access is memory-mapped — loading is a memcpy + CRC check,
  * no bootloader involvement. Writes (factory cal only) temporarily
  * switch QSPI to indirect mode, which is safe because Alchemy firmware
  * executes from SRAM (BOOT_SRAM), never XIP.
  *
- * Design-fallback behaviour: when the record is missing or corrupt the
+ * Design-fallback behavior: when the record is missing or corrupt the
  * SDK silently substitutes design-nominal constants so user firmware
  * never breaks; `AlchemyLabV2::IsCalibrated()` reports the distinction.
  */
@@ -107,7 +108,7 @@ inline uint32_t V2CalComputeCrc(const V2Calibration& c)
  *          are unspecified — call V2CalDesignFallback() before use. */
 bool V2CalLoadFromQspi(V2Calibration& out);
 
-/** Fill `out` with design-nominal values (uncalibrated behaviour):
+/** Fill `out` with design-nominal values (uncalibrated behavior):
  *  design slope/offset on every jack, full code range, mid-scale ADC
  *  zero, VDDA = 3.30 assumed. magic/crc are stamped so the struct is
  *  self-consistent, but it represents "no calibration". */

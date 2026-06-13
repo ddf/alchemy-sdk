@@ -14,11 +14,8 @@
  *   - |target| pixels counted off from the anchor — CLOCKWISE for
  *     positive volts, COUNTER-CLOCKWISE for negative. +3 V = three
  *     pixels clockwise; read the voltage by counting lit pixels.
- *   - Pixel colour = mode:  GREEN(+)/RED(−) = CALIBRATED,
+ *   - Pixel color = mode:  GREEN(+)/RED(−) = CALIBRATED,
  *     AMBER (both polarities) = UNCALIBRATED.
- *   - A BLINKING ring means that jack's calibrated output is clamped at
- *     its measured linear range (expected on J3–J6 at −5 V: the MCP4728
- *     output stage is VDD-limited near −4.4 V; J7/J8 reach full ±5 V).
  *
  * Button accents:  B1 pair dim white (step). B2 pair = mode: cyan when
  * CALIBRATED, red when UNCALIBRATED. B3 pair = cal record status: green
@@ -72,7 +69,7 @@ static uint16_t DesignCode(float v_target)
     return static_cast<uint16_t>(code + 0.5f);
 }
 
-/* Calibrated code, mirroring SetCvOutVolts' math (for delta + clamp UI). */
+/* Calibrated code, mirroring CvJack::SetVolts' math (for delta + clamp UI). */
 static uint16_t CalCode(uint8_t jack, float v_target)
 {
     const V2JackCal& jc = hw.Calibration().jack[jack];
@@ -144,7 +141,7 @@ static void ApplyOutputs(size_t step, bool calibrated)
     if (calibrated)
     {
         for (uint8_t j = 0; j < kNumDacOuts; ++j)
-            hw.SetCvOutVolts(j, v);
+            hw.cv_jacks[j].SetVolts(v);
     }
     else
     {
@@ -194,7 +191,7 @@ int main()
     hw.seed.StartLog(false);
 
     for (uint8_t j = 0; j < kNumDacOuts; ++j)
-        hw.RouteCvOut(j, true);
+        hw.cv_jacks[j].EnableCvOutput();
 
     daisy::System::Delay(500);
     hw.seed.PrintLine("=== V2 CAL TEST ===  IsCalibrated=%d  (B1: step volts, B2: cal on/off)",

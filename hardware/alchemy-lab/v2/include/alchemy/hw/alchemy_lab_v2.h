@@ -4,24 +4,41 @@
  *
  * Production surface (used by the unified `alchemy::AlchemyLab` typedef and
  * shared firmware):
- *   - seed, pots[kNumPots], cv[kNumCvInputs]
+ *   - seed, pots[kNumPots]
  *   - buttons[kNumButtons]   uniform IButton& accessor (B1/B2 on-MCU, B3
  *                            routed through the PCA9557 expander)
  *   - strip, leds            WS2812 + LedPanel
- *   - dac                    MCP4728 quad I²C DAC, jack routing via DG411 + expander
- *   - stm_dac                STM32 internal DAC (DAC1 ch 1 + ch 2)
  *   - sdmmc, fatfs           SDMMC1 (1-bit, MEDIUM_SLOW) + FatFS volume "0:"
  *   - Init(), ProcessAllControls(), StartAudio()
  *   - Layout(), Arc(), SampleRate(), BlockSize()
  *   - I2cReady(), ExpanderReady(), Mcp4728Ready(), StmDacReady()
  *
+ * Jacks — see README "Jack reference" for the full per-jack table:
+ *   - triggers[2]   J1, J2   codec inputs, AC-coupled. RisingEdge().
+ *   - cv_jacks[8]   J3..J10. Full CvJack API on every entry.
+ *                   [0..5] = J3..J8 (switchable analog, DG411-routed)
+ *                   [6, 7] = J9, J10 (codec out, DC-coupled)
+ *   - j1..j10       named refs into the arrays above.
+ *
+ * Frozen-contract compatibility:
+ *   - cv[kNumCvInputs] is a thin operator[] proxy over cv_jacks[0..5], so
+ *     framework code that does `hw.cv[i].Value()` keeps working unchanged.
+ *
  * Calibration (see v2_calibration.h / v2_factory_cal.h):
  *   - Init() loads the per-board V2Calibration record from QSPI; missing
  *     or corrupt records fall back to design constants silently.
- *   - cv[i].Volts() and SetCvOutVolts() are calibrated automatically.
+ *   - cv_jacks[i].Volts() and SetVolts() are calibrated automatically.
  *   - IsCalibrated() reports whether a real record was loaded.
  *   - Holding B1 + B2 through boot runs the on-board factory cal
  *     procedure and soft-resets (see v2_factory_cal.h).
+ *
+ * Audio shim: StartAudio() installs a thin wrapper around the user
+ * callback that (a) feeds J1/J2 sample blocks to the trigger detectors
+ * and (b) fills out[0]/out[1] with the staged SetVolts target for any
+ * codec jack with EnableCvOutput() in effect. A user callback that
+ * doesn't touch out[0]/out[1] (or whose writes are about to be
+ * overwritten anyway) sees zero behavioural change. Single-instance:
+ * one AlchemyLabV2 per program — the shim uses a static instance ptr.
  */
 
 #pragma once
@@ -35,7 +52,9 @@
 #include "alchemy/hw/alchemy_lab_v2_layout.h"
 #include "alchemy/hw/button.h"
 #include "alchemy/hw/cv_input.h"
+#include "alchemy/hw/cv_jack.h"
 #include "alchemy/hw/i_button.h"
+#include "alchemy/hw/trigger_jack.h"
 #include "alchemy/hw/ws2812.h"
 #include "alchemy/hw/pca9557.h"
 #include "alchemy/hw/pca9557_button.h"
@@ -53,7 +72,6 @@ class AlchemyLabV2
 
     daisy::DaisySeed       seed;
     daisy::AnalogControl   pots[kNumPots];
-    CvInput                cv[kNumCvInputs];
     Button                 on_mcu_buttons[kNumOnMcuButtons];   ///< B1, B2
     Pca9557Button          b3;                                 ///< B3 via expander
 
@@ -76,6 +94,35 @@ class AlchemyLabV2
     daisy::SdmmcHandler    sdmmc;
     daisy::FatFSInterface  fatfs;
 
+    /* ── Jacks (the new surface) ────────────────────────────────────────── */
+
+    TriggerJack triggers[kNumTriggerJacks];   ///< J1, J2
+    CvJack      cv_jacks[kNumCvJacks];        ///< J3..J10 (see header note)
+
+    /* Named refs — match panel labels. Initialised via in-class init so
+     * every constructor (and aggregate init) gets them for free. */
+    TriggerJack& j1  = triggers[0];
+    TriggerJack& j2  = triggers[1];
+    CvJack&      j3  = cv_jacks[0];
+    CvJack&      j4  = cv_jacks[1];
+    CvJack&      j5  = cv_jacks[2];
+    CvJack&      j6  = cv_jacks[3];
+    CvJack&      j7  = cv_jacks[4];
+    CvJack&      j8  = cv_jacks[5];
+    CvJack&      j9  = cv_jacks[6];
+    CvJack&      j10 = cv_jacks[7];
+
+    /* Frozen-contract proxy — `hw.cv[i].Value()` reads the i-th switchable
+     * CV jack (J3..J8). Existing framework + V1 firmware Just Works. */
+    struct CvProxy
+    {
+        CvJack* slots[kNumCvInputs];
+        CvJack&       operator[](uint8_t i)       { return *slots[i]; }
+        const CvJack& operator[](uint8_t i) const { return *slots[i]; }
+    };
+    CvProxy cv {{ &cv_jacks[0], &cv_jacks[1], &cv_jacks[2],
+                  &cv_jacks[3], &cv_jacks[4], &cv_jacks[5] }};
+
     /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
     /**
@@ -92,12 +139,9 @@ class AlchemyLabV2
      *   7.  B3 via expander
      *   8.  WS2812 strip + LedPanel
      *   9.  STM32 internal DAC (DAC1 ch 1 + 2 seeded mid-scale)
+     *   9b. Bind CvJack / TriggerJack instances to their backends
      *   10. SDMMC1 @ MEDIUM_SLOW / BITS_1
      *   11. FatFS lazy mount on volume "0:"
-     *
-     * Optional peripherals (I²C, expander) record their health in
-     * `I2cReady()` / `ExpanderReady()`; Init proceeds even on failure so
-     * the board still boots into a usable state for diagnosis.
      */
     void Init(daisy::SaiHandle::Config::SampleRate sample_rate
                   = daisy::SaiHandle::Config::SampleRate::SAI_48KHZ,
@@ -106,33 +150,13 @@ class AlchemyLabV2
     /**
      * Update all control state. Pots + CV via daisy::AnalogControl::Process,
      * on-MCU buttons via debounce, B3 via I²C-read + software debounce.
-     *
-     * Call at 1 ms cadence — see V1 docs for the rationale.
+     * Call at 1 ms cadence.
      */
     void ProcessAllControls();
 
-    /** Start audio with the given callback. */
+    /** Start audio with the given callback. Installs the trigger /
+     *  codec-CV shim around it transparently. */
     void StartAudio(daisy::AudioHandle::AudioCallback cb);
-
-    /* ── Calibrated CV output ──────────────────────────────────────────── */
-
-    /**
-     * Drive a CV jack to `volts` using the per-board calibration (or the
-     * design transfer when uncalibrated). The request is clamped to the
-     * jack's measured linear range — note J3..J6 (MCP4728) physically top
-     * out around −4.4 V because the MCP output is VDD-limited; J7/J8
-     * (STM DAC) reach the full ±5 V.
-     *
-     * The jack must be routed (RouteCvOut) for the voltage to reach the
-     * panel. @param jack 0..5 = J3..J8.
-     * @return false if the backing DAC (or, for MCP jacks, the expander
-     *         LDAC path) isn't ready, or `jack` is out of range.
-     */
-    bool SetCvOutVolts(uint8_t jack, float volts);
-
-    /** Connect / disconnect a jack's DG411 routing switch so its DAC
-     *  drives the panel jack. @return false if expander not ready. */
-    bool RouteCvOut(uint8_t jack, bool enable);
 
     /* ── Accessors ─────────────────────────────────────────────────────── */
 
@@ -149,7 +173,7 @@ class AlchemyLabV2
     bool StmDacReady()   const { return stm_dac_ready_; }
 
     /** True when a valid per-board cal record was loaded from QSPI.
-     *  False means cv[i].Volts() / SetCvOutVolts() run on design-nominal
+     *  False means cv_jacks[i].Volts() / SetVolts() run on design-nominal
      *  constants (~3-5 % absolute error). */
     bool IsCalibrated() const { return cal_loaded_; }
 
@@ -169,8 +193,16 @@ class AlchemyLabV2
     V2Calibration cal_{};
 
     /** MCP4728 writes are all-four-channels; shadow the last value per
-     *  channel so per-jack SetCvOutVolts doesn't disturb the others. */
+     *  channel so per-jack SetVolts doesn't disturb the others. */
     uint16_t mcp_shadow_[kMcp4728NumChannels] = { 2048u, 2048u, 2048u, 2048u };
+
+    /* ── Audio shim plumbing ─────────────────────────────────────────── */
+
+    daisy::AudioHandle::AudioCallback user_cb_ = nullptr;
+    static AlchemyLabV2* s_instance_;
+    static void AudioShim(daisy::AudioHandle::InputBuffer  in,
+                          daisy::AudioHandle::OutputBuffer out,
+                          size_t                           size);
 };
 
 } // namespace alchemy

@@ -23,7 +23,7 @@
  *   leds.Init(strip, alchemy::kAlchemyLabLayout);
  *
  *   leds.Clear();
- *   leds.SetRingByHour(pot_idx, hour, colour);
+ *   leds.SetRingByHour(pot_idx, hour, color);
  *   leds.Show();
  */
 
@@ -45,7 +45,7 @@ class LedPanel
 {
   public:
 
-    /* ── Colour types ─────────────────────────────────────────────────── */
+    /* ── Color types ─────────────────────────────────────────────────── */
 
     /** Single 8-bit RGB triplet. */
     struct Rgb { uint8_t r, g, b; };
@@ -126,11 +126,11 @@ class LedPanel
 
     /**
      * Scale @p c by this panel's current brightness.
-     * Call before passing colours to SetRingByOffset / SetChain.
+     * Call before passing colors to SetRingByOffset / SetChain.
      */
     Rgb ScaleGlobal(const Rgb& c) const;
 
-    /* ── Static colour helpers ────────────────────────────────────────── */
+    /* ── Static color helpers ────────────────────────────────────────── */
 
     /** Convert HSV (0..1 each) to RGB (0..255). H wraps; S/V are clamped. */
     static Rgb Hsv(float h, float s, float v);

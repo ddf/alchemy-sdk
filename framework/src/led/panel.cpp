@@ -111,7 +111,7 @@ LedPanel::Rgb LedPanel::ScaleGlobal(const Rgb& c) const
 }
 
 /* ========================================================================= */
-/*  Static colour helpers                                                     */
+/*  Static color helpers                                                     */
 /* ========================================================================= */
 
 LedPanel::Rgb LedPanel::Hsv(float h, float s, float v)

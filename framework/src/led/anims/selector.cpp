@@ -37,7 +37,7 @@ inline uint8_t SelectNearestZone(float value, uint8_t num_zones)
     return z;
 }
 
-/* Pick the colour for an *available* zone: active or dimmed inactive. */
+/* Pick the color for an *available* zone: active or dimmed inactive. */
 inline LedPanel::Rgb ZoneColor(const SelectorDesc& desc, uint8_t z, uint8_t selected)
 {
     if (z == selected) return desc.active_color;

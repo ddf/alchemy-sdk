@@ -29,6 +29,8 @@ target_link_libraries(alchemy_board_alchemy_lab_v2_hal PUBLIC daisy)
 add_library(alchemy_board_alchemy_lab_v2 STATIC
     src/alchemy_lab_v2.cpp
     src/v2_factory_cal.cpp
+    src/cv_jack.cpp
+    src/trigger_jack.cpp
 )
 add_library(alchemy::board_alchemy_lab_v2 ALIAS alchemy_board_alchemy_lab_v2)
 

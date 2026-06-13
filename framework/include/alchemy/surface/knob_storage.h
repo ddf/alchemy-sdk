@@ -5,7 +5,7 @@
  * VirtualKnob does not talk to Pager directly. Instead, it holds a
  * KnobStorage* and a page index, both wired at attach time by ControlLoop.
  * Pager is the canonical implementation; users who want custom page
- * mechanics or pot-catch behaviour implement their own type satisfying
+ * mechanics or pot-catch behavior implement their own type satisfying
  * this interface.
  *
  * Required:

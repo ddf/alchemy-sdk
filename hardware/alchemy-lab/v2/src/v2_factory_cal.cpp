@@ -266,7 +266,7 @@ bool PersistToQspi(AlchemyLabV2& hw, const V2Calibration& cal)
  * Frames are pushed during DAC settle windows (DMA ~3 ms < 5 ms settle),
  * so the LED data line is always quiet while the ADC samples.
  *
- * Colours are pre-dimmed: full-panel holds stay under ~300 mA.
+ * Colors are pre-dimmed: full-panel holds stay under ~300 mA.
  */
 
 using Rgb = LedPanel::Rgb;

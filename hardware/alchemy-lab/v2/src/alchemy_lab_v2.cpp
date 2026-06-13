@@ -4,7 +4,8 @@
  *
  * Production scope: Seed + audio, ADC (pots + CV), B1/B2 on-MCU buttons,
  * I²C1 + PCA9557 expander + B3, WS2812 + LedPanel, MCP4728 quad DAC,
- * STM32 internal DAC, SDMMC1 + FatFS.
+ * STM32 internal DAC, SDMMC1 + FatFS. Jacks (J1..J10) bound via
+ * CvJack / TriggerJack with a single audio shim around the user callback.
  */
 
 #include "alchemy/hw/alchemy_lab_v2.h"
@@ -13,6 +14,8 @@
 #include "ff.h"
 
 namespace alchemy {
+
+AlchemyLabV2* AlchemyLabV2::s_instance_ = nullptr;
 
 void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
                         uint32_t                             block_size)
@@ -25,16 +28,11 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
     sample_rate_hz_ = seed.AudioSampleRate();
     block_size_     = seed.AudioBlockSize();
 
-    /* 1b) Factory calibration hook — B1 + B2 held through boot. Must run
-     *     BEFORE the DMA ADC starts: the cal procedure uses its own
-     *     one-shot bare-metal ADC configuration on the same pins. The
-     *     procedure persists to QSPI and soft-resets; it never returns. */
+    /* 1b) Factory calibration hook — B1 + B2 held through boot. */
     if (V2FactoryCalRequested())
         V2RunFactoryCalibrationAndReset(*this);
 
-    /* 1c) Load the per-board cal record from memory-mapped QSPI. On any
-     *     validation failure fall back to design constants — user code
-     *     keeps working, IsCalibrated() reports the difference. */
+    /* 1c) Load the per-board cal record from memory-mapped QSPI. */
     cal_loaded_ = V2CalLoadFromQspi(cal_);
     if (!cal_loaded_)
         V2CalDesignFallback(cal_);
@@ -51,15 +49,6 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
     const float sr = seed.AudioCallbackRate();
     for (uint8_t i = 0; i < kNumPots; i++)
         pots[i].Init(seed.adc.GetPtr(i), sr, kPotPolarityFlipped, false, 0.0f);
-    for (uint8_t i = 0; i < kNumCvInputs; i++)
-    {
-        cv[i].Init(seed.adc.GetPtr(kCvAdcOffset + i), sr, /*flip=*/true,
-                   /*invert=*/false, /*slew=*/0.0f);
-        /* Per-channel zero + board VDDA. With the design-fallback record
-         * this reproduces the uncalibrated transfer exactly, so it is
-         * applied unconditionally. */
-        cv[i].SetCalibration(cal_.jack[i].adc_zero_code, cal_.vdda_at_cal);
-    }
 
     /* 3) On-MCU buttons (B1, B2) ──────────────────────────────────────── */
     for (uint8_t i = 0; i < kNumOnMcuButtons; i++)
@@ -78,9 +67,7 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
     if (i2c_ready_)
         expander_ready_ = expander.Init(i2c, kPca9557Address);
 
-    /* 6) MCP4728 quad DAC: probe on I²C, seed all four channels to
-     *    mid-scale (0 V at the panel after the ±5 V conditioning), pulse
-     *    LDAC through the expander to latch the outputs. */
+    /* 6) MCP4728 quad DAC */
     if (i2c_ready_)
     {
         mcp4728_ready_ = dac.Init(i2c, kMcp4728AddrFirst, kMcp4728AddrLast);
@@ -96,8 +83,7 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
     strip.Init(kLedTotal);
     leds.Init(strip, kAlchemyLabV2Layout);
 
-    /* 9) STM32 internal DAC (DAC1 ch 1 + 2). Both channels seeded to
-     *    mid-scale so the analog outputs idle at 0 V. */
+    /* 9) STM32 internal DAC (DAC1 ch 1 + 2). */
     {
         daisy::DacHandle::Config dac_cfg;
         dac_cfg.target_samplerate = 48000u;
@@ -114,9 +100,44 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
         }
     }
 
-    /* 10) SDMMC1 @ MEDIUM_SLOW / BITS_1 — most forgiving combo. Standard
-     *     (25 MHz) and BITS_4 are reintroducible once 1-bit reads are
-     *     proven stable in the field. */
+    /* 9b) Bind CvJack / TriggerJack to their backends.
+     *
+     * cv_jacks[0..3] → J3..J6 MCP4728 channels A..D, all sharing the
+     * mcp_shadow_ array. cv_jacks[4..5] → J7, J8 STM DAC1 ch1, ch2.
+     * cv_jacks[6..7] → J9, J10 codec output channels. Triggers bind to
+     * codec input channels by index — actual sample-block processing
+     * happens inside the audio shim. */
+    for (uint8_t i = 0; i < kNumCvInputs; i++)
+    {
+        const DacRoute& route = kDacRouting[i];
+        const uint8_t   src   = static_cast<uint8_t>(route.source);
+        const V2JackCal* cal  = &cal_.jack[i];
+
+        if (src < kMcp4728NumChannels)
+        {
+            cv_jacks[i].InitMcp(
+                seed.adc.GetPtr(kCvAdcOffset + i), sr, cal,
+                &dac, src,
+                &mcp_shadow_[src], mcp_shadow_,
+                &expander, route.select_io, kPca9557IoLdac);
+        }
+        else
+        {
+            const auto stm_ch = (src == 4u)
+                ? daisy::DacHandle::Channel::ONE
+                : daisy::DacHandle::Channel::TWO;
+            cv_jacks[i].InitStm(
+                seed.adc.GetPtr(kCvAdcOffset + i), sr, cal,
+                &stm_dac, stm_ch,
+                &expander, route.select_io);
+        }
+    }
+    cv_jacks[kNumCvInputs + 0].InitCodec(kCodecOutChJ9);   /* J9  */
+    cv_jacks[kNumCvInputs + 1].InitCodec(kCodecOutChJ10);  /* J10 */
+    /* TriggerJacks need no per-instance binding — channel indexing is
+     * implicit (triggers[0] ↔ in[0], triggers[1] ↔ in[1]) in AudioShim. */
+
+    /* 10) SDMMC1 @ MEDIUM_SLOW / BITS_1 */
     {
         daisy::SdmmcHandler::Config sd_cfg;
         sd_cfg.Defaults();
@@ -127,8 +148,7 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
         (void)sdmmc_ready;
     }
 
-    /* 11) FatFs lazy mount on volume "0:". opt=0 defers card init until
-     *     first f_open, so a missing card doesn't fail boot. */
+    /* 11) FatFs lazy mount on volume "0:". */
     {
         daisy::FatFSInterface::Config ff_cfg;
         ff_cfg.media = daisy::FatFSInterface::Config::MEDIA_SD;
@@ -139,64 +159,49 @@ void AlchemyLabV2::Init(daisy::SaiHandle::Config::SampleRate sample_rate,
     }
 }
 
-bool AlchemyLabV2::SetCvOutVolts(uint8_t jack, float volts)
-{
-    if (jack >= kNumDacOuts)
-        return false;
-
-    /* Invert the per-jack linear fit, clamp to the measured linear range
-     * (rail-saturation bounds from the cal sweep; full range on the
-     * design fallback). */
-    const V2JackCal& jc = cal_.jack[jack];
-    float code_f = (volts - jc.dac_offset_v) / jc.dac_gain_v_per_code;
-    if (code_f < static_cast<float>(jc.dac_min_linear_code))
-        code_f = static_cast<float>(jc.dac_min_linear_code);
-    if (code_f > static_cast<float>(jc.dac_max_linear_code))
-        code_f = static_cast<float>(jc.dac_max_linear_code);
-    const uint16_t code = static_cast<uint16_t>(code_f + 0.5f);
-
-    const DacRoute& route = kDacRouting[jack];
-    const uint8_t   src   = static_cast<uint8_t>(route.source);
-
-    if (src < kMcp4728NumChannels)  /* MCP4728 A..D */
-    {
-        if (!mcp4728_ready_ || !expander_ready_)
-            return false;
-        mcp_shadow_[src] = code;
-        if (!dac.WriteAll(mcp_shadow_[0], mcp_shadow_[1],
-                          mcp_shadow_[2], mcp_shadow_[3]))
-            return false;
-        return dac.PulseLdac(expander, kPca9557IoLdac);
-    }
-
-    /* STM32 DAC1 ch1 / ch2 */
-    if (!stm_dac_ready_)
-        return false;
-    stm_dac.WriteValue((src == 4u) ? daisy::DacHandle::Channel::ONE
-                                   : daisy::DacHandle::Channel::TWO,
-                       code);
-    return true;
-}
-
-bool AlchemyLabV2::RouteCvOut(uint8_t jack, bool enable)
-{
-    if (jack >= kNumDacOuts || !expander_ready_)
-        return false;
-    return expander.SetOutputBit(kDacRouting[jack].select_io,
-                                 enable ? kDg411OnLevel : !kDg411OnLevel);
-}
-
 void AlchemyLabV2::ProcessAllControls()
 {
-    for (uint8_t i = 0; i < kNumPots; i++)        pots[i].Process();
-    for (uint8_t i = 0; i < kNumCvInputs; i++)    cv[i].Process();
+    for (uint8_t i = 0; i < kNumPots; i++)         pots[i].Process();
+    /* Only the analog cv jacks (J3..J8) have an ADC — codec jacks J9/J10
+     * are output-only and CvJack::Process() short-circuits there. */
+    for (uint8_t i = 0; i < kNumCvInputs; i++)     cv_jacks[i].Process();
     for (uint8_t i = 0; i < kNumOnMcuButtons; i++) on_mcu_buttons[i].Poll();
     b3.Poll();
 }
 
 void AlchemyLabV2::StartAudio(daisy::AudioHandle::AudioCallback cb)
 {
-    seed.StartAudio(cb);
+    user_cb_    = cb;
+    s_instance_ = this;
+    seed.StartAudio(&AlchemyLabV2::AudioShim);
+}
+
+void AlchemyLabV2::AudioShim(daisy::AudioHandle::InputBuffer  in,
+                             daisy::AudioHandle::OutputBuffer out,
+                             size_t                           size)
+{
+    AlchemyLabV2* hw = s_instance_;
+    if (!hw) return;
+
+    /* Pre: feed J1/J2 sample blocks to trigger detectors. Read-only on
+     * in[] — never alters the user callback's view of audio input. */
+    hw->triggers[0].ProcessBlock(in[kCodecInChJ1], size);
+    hw->triggers[1].ProcessBlock(in[kCodecInChJ2], size);
+
+    /* User audio callback runs as written. */
+    if (hw->user_cb_) hw->user_cb_(in, out, size);
+
+    /* Post: for any codec jack claimed for CV out (EnableCvOutput), fill
+     * its channel with the staged target value. Whatever the user wrote
+     * to that channel is silently replaced — the README documents this. */
+    for (uint8_t k = 0; k < kNumCodecCvOuts; ++k)
+    {
+        CvJack& j = hw->cv_jacks[kNumCvInputs + k];
+        if (!j.connected_) continue;
+        const float sample = j.target_v_ / kCodecJackFullScaleVolts;
+        const uint8_t ch = j.codec_channel_;
+        for (size_t i = 0; i < size; ++i) out[ch][i] = sample;
+    }
 }
 
 } // namespace alchemy

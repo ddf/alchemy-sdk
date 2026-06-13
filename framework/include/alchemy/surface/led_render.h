@@ -74,7 +74,7 @@ class LedBinder
         }
 
         /**
-         * Pot index whose value selects the fill colour for
+         * Pot index whose value selects the fill color for
          * ArcStyle::GradientFill (via the snap-point array set with
          * Snaps()).  0xFF (the ParamSlot default) means no source —
          * the fill falls back to arc_color.

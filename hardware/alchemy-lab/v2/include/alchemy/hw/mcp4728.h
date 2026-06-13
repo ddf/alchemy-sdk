@@ -2,7 +2,7 @@
  * @file mcp4728.h
  * @brief alchemy::Mcp4728 — Microchip MCP4728 12-bit quad I²C DAC driver.
  *
- * Boot behaviour:
+ * Boot behavior:
  *   - 7-bit address is set in EEPROM (factory: 0x60..0x67 by part suffix).
  *     `Init()` probes 0x60..0x67 sequentially and uses the first ACK.
  *   - All four channels are configured for VREF = VDD (3.3 V), Gain = 1,
@@ -35,7 +35,7 @@ class Mcp4728
     /** Write the 12-bit values for all four channels in one Multi-Write
      *  transaction. Bits 12..15 of each value are ignored.
      *
-     *  Latch behaviour: after this call, the chip has the new values in
+     *  Latch behavior: after this call, the chip has the new values in
      *  its DAC input registers but the analog outputs do not change until
      *  LDAC pulses low. Use `PulseLdac()` to trigger the latch.
      */

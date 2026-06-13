@@ -131,7 +131,7 @@ void DrawSparkle(LedPanel&          dst,
         const uint8_t off  = dst.RingOffsetForHour(pot_idx, hour);
 
         /* Blend the sparkle onto whatever is there: scale by intensity,
-         * or mix with the background colour when one is in use so the
+         * or mix with the background color when one is in use so the
          * passive tint shows through at sub-LED brightness.            */
         const LedPanel::Rgb c = has_bg
             ? LedPanel::Mix(desc.passive_color, desc.spark_color, k)

@@ -17,7 +17,7 @@ inline bool HasBackground(const LedPanel::Rgb& c)
 /**
  * Paint one step with weight @p k.  Blends over @p bg when a background
  * is set so the pip fades in from the ring tint instead of jumping to
- * full colour; writes the colour scaled by @p k directly otherwise.
+ * full color; writes the color scaled by @p k directly otherwise.
  */
 inline void PaintStep(LedPanel&            dst,
                       uint8_t              pot_idx,
@@ -113,7 +113,7 @@ void DrawPip(LedPanel&      dst,
         return;
     }
 
-    /* ── Quantised path: original LED-stepping behaviour ─────────────── */
+    /* ── Quantised path: original LED-stepping behavior ─────────────── */
 
     uint8_t center_step = static_cast<uint8_t>(
         v * static_cast<float>(arc_leds - 1u) + 0.5f);

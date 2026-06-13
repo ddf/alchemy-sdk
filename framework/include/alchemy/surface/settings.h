@@ -50,7 +50,7 @@ constexpr LedPanel::Rgb kSettingsDefaultIndicator = {0xFF, 0x50, 0x00};
 class Settings : public Serializable
 {
   public:
-    /* ── Legacy flag-only ctor (unchanged behaviour) ─────────────── */
+    /* ── Legacy flag-only ctor (unchanged behavior) ─────────────── */
     Settings(IButton& b2, IButton& b3,
              uint32_t hold_ms = kDefaultSettingsHoldMs);
 
@@ -148,7 +148,7 @@ class Settings : public Serializable
 
     bool IsActive() const { return active_; }
 
-    /** Colour painted on B1's button-pair while IsActive(). */
+    /** Color painted on B1's button-pair while IsActive(). */
     void SetIndicatorColor(LedPanel::Rgb c) { indicator_color_ = c; }
 
     /* ── Serializable ────────────────────────────────────────────── */

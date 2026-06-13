@@ -259,6 +259,33 @@ constexpr DacRoute kDacRouting[kNumDacOuts] = {
 constexpr uint8_t kMcp4728AddrFirst = 0x60u;
 constexpr uint8_t kMcp4728AddrLast  = 0x67u;
 constexpr uint8_t kMcp4728NumChannels = 4u;
+
+/* ========================================================================= */
+/*  Codec jack mapping                                                        */
+/* ========================================================================= */
+/*
+ * J1, J2  — codec inputs (AC-coupled audio in), routed as trigger jacks.
+ * J9, J10 — codec outputs (DC-coupled audio out), routed as CV-out jacks.
+ *
+ * Channel indices match the audio callback's in[]/out[] buffer layout:
+ *   J1 ↔ in[0]   J9  ↔ out[0]
+ *   J2 ↔ in[1]   J10 ↔ out[1]
+ *
+ * The standard Daisy codec analog stages map ±5 V at the panel ↔ ±1.0 in
+ * normalised sample units. Used by the audio shim to convert SetVolts()
+ * targets to codec samples and to threshold trigger inputs.
+ */
+constexpr uint8_t kNumTriggerJacks = 2u;  /* J1, J2 */
+constexpr uint8_t kNumCodecCvOuts  = 2u;  /* J9, J10 */
+constexpr uint8_t kNumCvJacks      = kNumCvInputs + kNumCodecCvOuts; /* 8 */
+
+constexpr uint8_t kCodecInChJ1  = 0u;
+constexpr uint8_t kCodecInChJ2  = 1u;
+constexpr uint8_t kCodecOutChJ9  = 0u;
+constexpr uint8_t kCodecOutChJ10 = 1u;
+
+constexpr float kCodecJackFullScaleVolts = 5.0f;
+
 extern const HardwareLayout kAlchemyLabV2Layout;
 
 constexpr uint32_t kPresetFlashBase      = 0x90760000u;

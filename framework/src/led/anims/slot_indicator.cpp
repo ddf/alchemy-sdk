@@ -31,9 +31,9 @@ void DrawSlotIndicator(LedPanel&                 dst,
                          float                     fill_k,
                          const SlotIndicatorStyle& style)
 {
-    const uint8_t       colour_idx = (slot >> 2) & 0x3u;
+    const uint8_t       color_idx = (slot >> 2) & 0x3u;
     const uint8_t       num_arcs   = (slot & 0x3u) + 1u;
-    const LedPanel::Rgb base_col   = style.colors[colour_idx];
+    const LedPanel::Rgb base_col   = style.colors[color_idx];
 
     for (uint8_t step = 0; step < arc_leds; step++)
     {

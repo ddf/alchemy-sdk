@@ -4,15 +4,14 @@
  *
  * Demonstrates the V2 calibration surface end-to-end:
  *
- *   - `hw.IsCalibrated()`     — was a per-board cal record loaded from QSPI?
- *   - `hw.RouteCvOut(j, on)`  — close the DG411 so the jack carries the DAC
- *   - `hw.SetCvOutVolts(j,v)` — calibrated voltage out (±10 mV on a
- *                               calibrated board; design-nominal otherwise)
- *   - `hw.cv[j].Volts()`      — calibrated voltage in
+ *   - `hw.IsCalibrated()`           — was a per-board cal record loaded?
+ *   - `hw.cv_jacks[j].EnableCvOutput()` — close DG411, jack drives panel
+ *   - `hw.cv_jacks[j].SetVolts(v)`  — calibrated voltage out (±10 mV)
+ *   - `hw.cv_jacks[j].Volts()`      — calibrated voltage in
  *
- * Behaviour: all six jacks step through −4, −2, 0, +2, +4 V, two seconds
- * per step, forever. Scope any jack to verify. The Seed LED shows cal
- * status: solid = calibrated record active, slow blink = design fallback.
+ * Behavior: all six switchable jacks step through −4, −2, 0, +2, +4 V,
+ * two seconds per step, forever. Scope any jack to verify. The Seed LED
+ * shows cal status: solid = calibrated, slow blink = design fallback.
  *
  * To (re)calibrate the board: hold B1 + B2 while resetting. The on-board
  * factory cal runs (~15 s, LED pulses), persists to QSPI, and the board
@@ -30,9 +29,9 @@ int main()
 {
     hw.Init();
 
-    /* Route every jack's DAC to its panel jack. */
-    for (uint8_t j = 0; j < kNumDacOuts; ++j)
-        hw.RouteCvOut(j, true);
+    /* Drive every switchable jack as a CV output (J3..J8). */
+    for (uint8_t j = 0; j < kNumCvInputs; ++j)
+        hw.cv_jacks[j].EnableCvOutput();
 
     constexpr float kSteps[]   = { -4.0f, -2.0f, 0.0f, 2.0f, 4.0f };
     constexpr size_t kNumSteps = sizeof(kSteps) / sizeof(kSteps[0]);
@@ -41,8 +40,8 @@ int main()
     uint32_t step_start = daisy::System::GetNow();
     uint32_t led_tick   = 0;
 
-    for (uint8_t j = 0; j < kNumDacOuts; ++j)
-        hw.SetCvOutVolts(j, kSteps[step]);
+    for (uint8_t j = 0; j < kNumCvInputs; ++j)
+        hw.cv_jacks[j].SetVolts(kSteps[step]);
 
     while (true)
     {
@@ -52,8 +51,8 @@ int main()
         {
             step       = (step + 1u) % kNumSteps;
             step_start = now;
-            for (uint8_t j = 0; j < kNumDacOuts; ++j)
-                hw.SetCvOutVolts(j, kSteps[step]);
+            for (uint8_t j = 0; j < kNumCvInputs; ++j)
+                hw.cv_jacks[j].SetVolts(kSteps[step]);
         }
 
         /* LED: solid when calibrated, 1 Hz blink on design fallback. */
