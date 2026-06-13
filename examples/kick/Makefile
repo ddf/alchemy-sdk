@@ -3,7 +3,6 @@
 # Usage from this directory:
 #   make              — build firmware for the Daisy Seed2 DFM
 #   make program-dfu  — flash via DFU to QSPI at 0x90040000
-#                       (put the module in DFU mode first: hold BOOT, tap RESET, release BOOT)
 #   make size         — arm-none-eabi-size summary for this example
 #   make clean        — clean the cross-compile build tree
 #

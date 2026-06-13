@@ -43,7 +43,7 @@ demonstrating how to build a fully featured module by bringing your own DSP.
 
 The below build and requirements work with this repo, and the examples within. For a typical project, you'd clone and use the quick template below. 
 
-> ➡️ [Go to the Quick Template](#Quick-template)
+> ➡️ [Go to the Quick Template](#quick-template)
 
 ### Requirements
 
@@ -80,9 +80,9 @@ cmake --build --preset arm
 ### Flash an example
 
 Connect the front USB-C port and put the module in update mode: press
-**B1 or B2** during the ~2 s bootloader window after power-on (rings
-spin a warm-white comet), or simply hold one of them while powering on.
-The rings switch to a slow breathe with the B1/B2 LEDs lit, and the
+**B3** during the ~2 s bootloader window after power-on (rings
+spin a warm-white comet), or simply hold while powering on.
+The rings switch to a slow breathe and the
 module stays in DFU mode until it's flashed or reset. Then:
 
 ```sh
@@ -97,9 +97,10 @@ Other examples flash the same way, e.g. `kick-flash`, `clock_sync-flash`,
 
 ## Quick template
 
-TODO: see [`alchemy-template`](#) for a project skeleton that vendors
-the Alchemy SDK and libDaisy as git submodules.  This is the recommended
-starting point for your own module firmware.
+See [`alchemy-template`](https://github.com/hermetic-modular/alchemy-template)
+for a project skeleton that vendors the Alchemy SDK and libDaisy as git
+submodules.  This is the recommended starting point for your own module
+firmware.
 
 ## Animation library
 
@@ -122,7 +123,7 @@ The framework ships a set of declarative ring-rendering primitives in
 - Two clock primitives,`ClockPll` and `MusicalClock` + `ClockFollower`
 - Self DAC/ADC calibration. See [Calibration](#calibration-v2-boards)
 - Custom board bootloader (panel LED animations + `Alchemy Lab` USB name)
-- Flash firmware via front USB-C + button (B1/B2 latch update mode)
+- Flash firmware via front USB-C + button (B3 latch update mode)
 
 ### Planned TODO
 

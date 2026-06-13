@@ -1,5 +1,5 @@
 /**
- * kick.cpp — Alchemy Lab V1 trigger-driven kick drum.
+ * kick.cpp — Alchemy Lab trigger-driven kick drum.
  *
  * Single-page percussion instrument: pitch-swept sine body, hard-clip
  * saturation, switchable one-shot transient layer, looping automation per
