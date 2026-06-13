@@ -54,7 +54,7 @@ struct PipDesc
     uint8_t       width           = 1u;                   ///< Number of LEDs to light.
     float         blink_hz        = 0.0f;                 ///< 0 = always on; >0 = blink at this rate.
 
-    /* Opt-in polish — all defaults preserve the original quantised behaviour. */
+    /* Opt-in polish — all defaults preserve the original quantised behavior. */
 
     bool          smooth          = false;                ///< Sub-LED two-tap interpolation (width == 1 only).
     float         tail_intensity  = 0.0f;                 ///< Comet-tail brightness 0..1 (smooth only); 0 = no tails.
