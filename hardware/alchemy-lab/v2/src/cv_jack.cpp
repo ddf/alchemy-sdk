@@ -116,12 +116,15 @@ bool CvJack::SetVolts(float volts)
 
     if (!cal_) return false;
 
-    /* Invert the per-jack linear fit, clamp to the measured linear range. */
+    /* Invert the per-jack linear fit, clamp to the 12-bit hardware range.
+       Past the linear region (cal_->dac_{min,max}_linear_code) the output
+       compresses near the DAC's supply rails, so the jack stops tracking
+       the fit — but pushing to 0/4095 still gets us as close to ±5 V as
+       the analog stage physically allows, which matters more than
+       perfect linearity in the last ~100 mV. */
     float code_f = (volts - cal_->dac_offset_v) / cal_->dac_gain_v_per_code;
-    if (code_f < static_cast<float>(cal_->dac_min_linear_code))
-        code_f = static_cast<float>(cal_->dac_min_linear_code);
-    if (code_f > static_cast<float>(cal_->dac_max_linear_code))
-        code_f = static_cast<float>(cal_->dac_max_linear_code);
+    if (code_f < 0.0f)      code_f = 0.0f;
+    if (code_f > 4095.0f)   code_f = 4095.0f;
     const uint16_t code = static_cast<uint16_t>(code_f + 0.5f);
 
     if (backend_ == Backend::Mcp)
