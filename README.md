@@ -130,11 +130,16 @@ All output ranges are ±5 V at the panel.
 
 ## Bootloader Information
 
-Alchemy Lab V2 boards run a board-specific fork of the Daisy bootloader
-(`DaisyBootloader-AlchemyLabV2`). It serves DFU on the front-panel
-USB-C port, renders
-bootloader state on the panel, and latches into update mode
-when B3 is pressed during the boot window. Apps built with this SDK can also enter update mode programmatically:
+Alchemy Lab V2 boards run a board-specific fork of the Daisy bootloader. It serves DFU on the front-panel
+USB-C port, renders bootloader state on the panel, and latches into update mode
+when B3 is pressed during the boot window. 
+
+<details>
+<summary>Bootloader Details</summary>
+
+[`The bootloader`](https://github.com/hermetic-modular/alchemy-lab-bootloader) is also open source.
+
+Apps built with this SDK can also enter update mode programmatically:
 
 ```cpp
 daisy::System::ResetToBootloader(
@@ -142,6 +147,8 @@ daisy::System::ResetToBootloader(
 ```
 
 This could be used to support multiple firmwares in flash at once without requiring a reflash as a future feature.
+
+</details>
 
 ## Animation library
 
