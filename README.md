@@ -24,16 +24,12 @@ Supported boards:
 - Hermetic Modular [Alchemy Lab](https://hermeticmodular.com/modules/alchemy-lab)
 - Hermetic Modular [Azoth](https://hermeticmodular.com/modules/azoth) — coming soon
 
-TODO: hardware images.
+<img src="media/hero.jpg" alt="Hero Hardware" width="600">
 
-## Community discussion
-
-Please get involved on [Discord](https://discord.gg/FEEEQFdd2G), provide feedback, and help us improve.
-
-## Beta notice
+## Beta notice and Community discussion
 
 The Alchemy SDK is in beta.  APIs, surface names, and on-disk preset
-formats may change before the first stable release. I (Luke at Hermetic Modular) look forward to your feedback, and want to make this SDK the best possible for your needs. Please file issues on GitHub or Discord.
+formats may change before the first stable release. I (Luke at Hermetic Modular) look forward to your feedback, and want to make this SDK the best possible for your needs. Please file issues on GitHub or [Discord](https://discord.gg/FEEEQFdd2G).
 
 ## Quickstart
 
@@ -41,9 +37,15 @@ formats may change before the first stable release. I (Luke at Hermetic Modular)
 place to start: it opts into most Alchemy Framework features,
 demonstrating how to build a fully featured module by bringing your own DSP.
 
-The below build and requirements work with this repo, and the examples within. For a typical project, you'd clone and use the quick template below. 
+See [`alchemy-template`](https://github.com/hermetic-modular/alchemy-template)
+for a project skeleton that vendors the Alchemy SDK and libDaisy as git
+submodules.  This is the recommended starting point for your own module
+firmware.
 
-> ➡️ [Quick Template](#quick-template)
+<details>
+<summary>Installation and Requirements</summary>
+
+These are the instructions for this SDK repo, and deploying the examples here. In a typical application of the SDK, you would vendor it as a git submodule, like you would with libDaisy.
 
 ### Requirements
 
@@ -95,22 +97,17 @@ inside the 2 s window.
 Other examples flash the same way, e.g. `kick-flash`, `clock_sync-flash`,
 `v2_cal_test-flash`, `v2_cv_demo-flash`, `cv_playground-flash`.
 
-## Quick template
-
-See [`alchemy-template`](https://github.com/hermetic-modular/alchemy-template)
-for a project skeleton that vendors the Alchemy SDK and libDaisy as git
-submodules.  This is the recommended starting point for your own module
-firmware.
+</details>
 
 ## Working with CV and Jacks
 
 There are ten jacks total. The middle six are field programmable to be CV in or out. The other four are the audio codec stereo in and out. These can be repurposed for CV in and out, with some caveats.
 
-See [`cv_playground.cpp`](examples/stereo_eq/cv_playground.cpp) for all of these in practice.
+See [`cv_playground.cpp`](examples/cv_playground/cv_playground.cpp) for all of these in practice.
 
 **J1, J2** are codec audio inputs, AC-coupled. AC coupling blocks DC so absolute voltage can't be read, but rising edges pass cleanly, allowing for clocks and triggers. Use `RisingEdge()`. A use case may be you have a module that does not process input audio, in which case you could use these jacks for trigger inputs, to free up the other switchable jacks. Theoretically you could also set a low trigger threshold and get gate signals up to the length it takes the AC cap to debias the DC signal - some testing is required to see how long these gates could be.
 
-**J3–J8** are the field programmable jacks. They can be mode changed with `EnableCvOutput()` closes an analog switch to route the backing DAC (MCP4728 on J3–J6, STM DAC1 on J7–J8) onto the panel; `DisableCvOutput()` disconnects the DAC. This can be set at boot or changed live for unique firmware development opportunities.
+**J3–J8** are the field programmable jacks. They can be mode changed with `EnableCvOutput()` which closes an analog switch to route the backing DAC (MCP4728 on J3–J6, STM DAC1 on J7–J8); `DisableCvOutput()` disconnects the DAC. This can be set at boot or changed live for unique firmware development opportunities.
 
 **J9, J10** are codec audio outputs, DC-coupled. `EnableCvOutput()` claims that codec channel from your audio callback and fills it with the `SetVolts()` target every block — the highest precision on the board (24-bit), at audio-block update rate.
 
@@ -137,8 +134,7 @@ Alchemy Lab V2 boards run a board-specific fork of the Daisy bootloader
 (`DaisyBootloader-AlchemyLabV2`). It serves DFU on the front-panel
 USB-C port, renders
 bootloader state on the panel, and latches into update mode
-when B1 or B2 is pressed during the boot window.
-Apps built with this SDK can also enter update mode programmatically:
+when B3 is pressed during the boot window. Apps built with this SDK can also enter update mode programmatically:
 
 ```cpp
 daisy::System::ResetToBootloader(
@@ -165,15 +161,10 @@ calibrated.  The result is a 120-byte record in a dedicated QSPI sector
 that **survives firmware reflashes** — calibrate once per board, every
 SDK firmware picks it up automatically.
 
-**Using it** is invisible: `hw.j3.SetVolts(volts)` and
-`hw.j3.Volts()` apply the calibration transparently, and fall
-back to design-nominal scaling when no record exists
-(`hw.IsCalibrated()` tells you which).  See
-[`v2_calibration.h`](hardware/alchemy-lab/v2/include/alchemy/hw/v2_calibration.h)
-and [`v2_factory_cal.h`](hardware/alchemy-lab/v2/include/alchemy/hw/v2_factory_cal.h)
-for the details, and
-[`examples/v2_cal_test`](examples/v2_cal_test/v2_cal_test.cpp) for a
-scope-driven acceptance test (step −5..+5 V, toggle calibration live).
+The set volts functions apply calibration transparently - `hw.j3.SetVolts(volts)` and
+`hw.j3.Volts()` - and fall back when no record exists. Use `hw.IsCalibrated()` to find out if a record exists.  See
+[`v2_calibration.h`](hardware/alchemy-lab/v2/include/alchemy/hw/v2_calibration.h) for details and
+[`examples/v2_cal_test`](examples/v2_cal_test/v2_cal_test.cpp) for a toggle calibration test app.
 
 ## Expansion Header
 
@@ -181,7 +172,7 @@ There is an expansion header on the back of the unit. In the future,
 there will be official Hermetic Modular expanders. In the meantime, an
 enterprising developer is welcome to develop their own expander modules.
 
-![Header Render](media/header-pinout.png)
+<img src="media/header-pinout.png" alt="Header Render" width="600">
 
 ### Header Pinout
 
@@ -201,15 +192,6 @@ Daisy Seed2 DFM pins, and together expose **SPI1**, an **I²C** bus, and
 |  18 | GND    |        |   8 | B3     |
 |  19 | GND    |        |   9 | B1     |
 |  20 | B8     |        |  10 | B7     |
-
-## Future implementations
-
-- Expansion-header support/pinout documentation
-
-Post release scope:
-- Better QSPI safe read/write helpers (don't step on used regions)
-- USB PC connection
-- MIDI implementation example
 
 ## Board versions
 
