@@ -1,9 +1,6 @@
 /**
  * kick_dsp.cpp — Kick voice implementation.
  *
- * Direct port of the DSP body from the original kick.cpp. Mapping curves
- * for pitch / sweep / drive / decay are baked in here, so the control side
- * just supplies normalised pot values.
  */
 
 #include "kick_dsp.h"
