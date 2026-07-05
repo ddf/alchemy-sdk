@@ -30,6 +30,7 @@
 #include <cstddef>
 #include "alchemy/control/preset_store.h"
 #include "alchemy/hw/alchemy_lab_layout.h"  /* PresetFlashOps, kPresetFlashBase, etc. */
+#include "alchemy/surface/preset_name.h"
 #include "alchemy/surface/serializable.h"
 
 namespace daisy { class QSPIHandle; }
@@ -82,6 +83,8 @@ class Presets
      */
     void Init();
 
+    void SetYield(PresetStoreYieldFn fn, void* ctx);
+
     /** Capture every managed component and write to flash @p slot. */
     bool Save(uint8_t slot);
 
@@ -92,10 +95,83 @@ class Presets
     bool BootLoad();
 
     /**
+     * Store preset display names inside the blob itself, so names travel
+     * with the hardware and inside exports (hosts read and edit them via
+     * the descriptor's "name" component).  The owned PresetName is kept
+     * pinned LAST in the manage order no matter when this is called, so
+     * no other component's blob offset ever depends on call position.
+     * Returns the component (e.g. to seed a factory name).
+     */
+    PresetName& UseNames();
+
+    /**
+     * One-shot hook fired at the top of the next BootLoad(), before the
+     * boot preset deserializes.  HostLink registers its descriptor render
+     * here so captured defaults are factory defaults; app code normally
+     * never calls this.  One slot — later calls replace earlier ones.
+     */
+    void SetPreBootHook(void (*fn)(void*), void* ctx);
+
+    /**
      * True if @p slot holds a CRC-verified record whose schema hash
      * matches the currently-managed set.
      */
     bool HasValid(uint8_t slot) const;
+
+    /* ── Host access (HostLink) / introspection ─────────────────────
+     * Everything below operates on the same managed set and the same
+     * wear-levelled store as Save/Load.
+     */
+
+    /** Custom-backend Init for host tests or non-default flash regions. */
+    void Init(const FlashOps& ops, uintptr_t flash_base);
+
+    /** Combined schema hash of the managed set (what slots are stamped with). */
+    uint32_t LiveSchemaHash() const { return SchemaHash(); }
+
+    /** Serialized size of the managed set. */
+    size_t LiveSize() const { return ManagedSize(); }
+
+    /** Serialize every managed component into @p out (≤ @p cap bytes).
+     *  Returns bytes written, or 0 if cap is too small. */
+    size_t SerializeLive(uint8_t* out, size_t cap) const;
+
+    /** Apply a byte stream to the managed set (the Load() path minus
+     *  flash).  @p len must equal LiveSize(). */
+    bool DeserializeLive(const uint8_t* in, size_t len);
+
+    struct SlotInfo
+    {
+        bool     valid;         /* CRC-verified record present          */
+        bool     schema_match;  /* stored hash == LiveSchemaHash()      */
+        uint32_t seq;           /* wear-levelling sequence (0 if none)  */
+        uint16_t length;        /* stored payload length (0 if none)    */
+        uint32_t schema_hash;   /* stored hash (0 if none)              */
+    };
+    SlotInfo InfoFor(uint8_t slot) const;
+
+    /**
+     * Copy up to @p max_len stored payload bytes from @p offset into
+     * @p dst, reading straight from memory-mapped flash.  Returns bytes
+     * copied (0 when offset ≥ stored length) or -1 when the slot holds
+     * no valid record.  @p schema_out / @p total_out are filled on
+     * success when non-null.
+     */
+    int32_t ReadSlotBytes(uint8_t slot, uint32_t offset,
+                          uint8_t* dst, uint16_t max_len,
+                          uint32_t* schema_out, uint16_t* total_out) const;
+
+    bool WriteSlotRaw(uint8_t slot, uint32_t schema_hash,
+                      const uint8_t* bytes, uint16_t len);
+
+    /** Invalidate @p slot (both ping-pong sides). */
+    bool EraseSlot(uint8_t slot);
+
+    uint8_t             NumManaged() const { return num_managed_; }
+    const Serializable* ManagedAt(uint8_t i) const
+    {
+        return (i < num_managed_) ? managed_[i] : nullptr;
+    }
 
   private:
     /* On-flash payload: schema-hash + length-prefixed byte stream. */
@@ -120,6 +196,13 @@ class Presets
     PresetStore<PresetBlob, kNumSlots> store_;
     Serializable*                     managed_[kPresetMaxManaged] = {};
     uint8_t                           num_managed_ = 0;
+
+    /* UseNames() state — see Manage() for the pin-last insertion. */
+    PresetName                        name_component_;
+    bool                              use_names_ = false;
+
+    void (*pre_boot_fn_)(void*) = nullptr;
+    void*  pre_boot_ctx_        = nullptr;
 };
 
 } // namespace alchemy
