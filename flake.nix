@@ -21,7 +21,6 @@
     {
       devShells = forAllSystems (
         pkgs:
-        in
         {
           default = pkgs.mkShell {
             name = "alchemy-lab-dev-shell";
@@ -43,7 +42,7 @@
                 TITLE=$(${pkgs.gum}/bin/gum style \
                   --bold \
                   --foreground '#00fc94' \
-                  "⚗️ Alchemy Lab Development Shell ⚗️")
+                  "Alchemy Lab Development Shell")
 
                 SUBTITLE=$(${pkgs.gum}/bin/gum style \
                   --align center \
@@ -55,7 +54,7 @@
                   --border thick \
                   --padding "1 1" \
                   --border-foreground '#cdb8a5' \
-                  "$TITLE
+                  "  $TITLE
 
                   $SUBTITLE"
               '';
