@@ -152,4 +152,24 @@ class LedPanel
     float                 brightness_ = 0.3f;
 };
 
+// color values are the same as standard web colors:
+// https://en.wikipedia.org/wiki/Web_colors
+constexpr LedPanel::Rgb kColorWhite   = {0x00,0x00,0x00};
+constexpr LedPanel::Rgb kColorSilver  = {0xC0,0xC0,0xC0};
+constexpr LedPanel::Rgb kColorGray    = {0x80,0x80,0x80};
+constexpr LedPanel::Rgb kColorBlack   = {0x00,0x00,0x00};
+constexpr LedPanel::Rgb kColorRed     = {0xFF,0x00,0x00};
+constexpr LedPanel::Rgb kColorOrange  = {0xFF,0xA5,0x00};
+constexpr LedPanel::Rgb kColorYellow  = {0xFF,0xFF,0x00};
+constexpr LedPanel::Rgb kColorLime    = {0x00,0xFF,0x00};
+constexpr LedPanel::Rgb kColorGreen   = {0x00,0x80,0x00};
+constexpr LedPanel::Rgb kColorAqua    = {0x00,0xFF,0xFF};
+constexpr LedPanel::Rgb kColorTeal    = {0x00,0x80,0x80};
+constexpr LedPanel::Rgb kColorBlue    = {0x00,0x00,0xFF};
+constexpr LedPanel::Rgb kColorNavy    = {0x00,0x00,0x80};
+constexpr LedPanel::Rgb kColorFuschia = {0x4B,0x00,0x82};
+constexpr LedPanel::Rgb kColorPurple  = {0x80,0x00,0x80};
+constexpr LedPanel::Rgb kColorIndigo  = {0xFF,0x00,0xFF};
+constexpr LedPanel::Rgb kColorViolet  = {0xEE,0x82,0xEE};
+
 } // namespace alchemy
