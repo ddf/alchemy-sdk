@@ -924,6 +924,62 @@ static void TestDescriptorBuilder()
         db.EndPager();
         CHECK_EQ(db.Finish(), 0u);
     }
+
+    /* A settings surface WITHOUT UsePresets must not emit a gestures
+     * key at all — the array exists only when gesture pots exist.  The
+     * probe is shape-scoped ("gestures":[{"page") because buttons
+     * legitimately emit a gestures key of their own per chip. */
+    CHECK(json.find("\"gestures\":[{\"page\"") == std::string::npos);
+}
+
+/* UsePresets marks two pots as gesture-owned.  They persist no bytes, so
+ * they can never be SettingsFields — the descriptor must still surface
+ * them (display-only "gestures" entries) so a host can mirror the panel
+ * instead of rendering the preset pots as unexplained gaps. */
+static void TestSettingsGesturesEmission()
+{
+    RamFlash   flash;
+    AlchemyLab hw;
+    Pager      pager{hw.buttons[0], 3, 6};
+    Settings   settings{hw, &pager};
+    Presets    presets{g_dummy_qspi};
+
+    auto mode = settings.Page(0).Pot(0).Selector(4).Default(1);
+    auto gain = settings.Page(0).Pot(5).Knob().Default(0.5f);
+    settings.UsePresets(presets);        /* claims page 0, pots 2 + 3 */
+    presets.Manage(settings);
+    presets.Init(flash.Ops(), flash.Base());
+
+    static char buf[8192];
+    DescriptorBuilder db(buf, sizeof buf, presets);
+    bool ok = db.Begin({"gestmod", "Gestures", "0.0.1", "gitg", "0.1.0", "v1"});
+    ok &= db.BeginSettings("settings", settings);
+    ok &= db.SettingsField(0, 0, "s.mode", "Mode", nullptr);
+    ok &= db.SettingsField(0, 5, "s.gain", "Gain", nullptr);
+    /* Gesture pots are not fields — declaring one must fail the build
+     * (checked on a scratch builder so the real one stays clean). */
+    {
+        static char buf2[8192];
+        DescriptorBuilder db2(buf2, sizeof buf2, presets);
+        db2.Begin({"x", "x", "1", "g", "s", "v1"});
+        db2.BeginSettings("settings", settings);
+        CHECK(!db2.SettingsField(0, 2, "bad", "Bad", nullptr));
+    }
+    ok &= db.EndSettings();
+    const uint32_t len = db.Finish();
+    CHECK(ok);
+    CHECK(len > 0u);
+    const std::string json(buf, len);
+
+    /* Both gesture pots, page-major order, SDK-authored names. */
+    CHECK(json.find("\"gestures\":["
+                    "{\"page\":0,\"pot\":2,\"name\":\"Preset Slot\"},"
+                    "{\"page\":0,\"pot\":3,\"name\":\"Save / Load\"}]")
+          != std::string::npos);
+    /* Emitted on the settings component, before its fields array. */
+    CHECK(json.find("\"gestures\":") < json.find("\"fields\":"));
+
+    (void)mode; (void)gain;
 }
 
 /* ── Descriptor auto-derivation (describe.h) ───────────────────────── */
@@ -1706,6 +1762,81 @@ static void TestSettingsLoadCanonicalization()
     CHECK(st.StoredNormAt(0, 1) == 0.0f);
 }
 
+/* Pager::GoToPage — direct page addressing for "home"-style gestures.
+ * The contract mirrors the cyclic advance inside Update(): the destination
+ * page's catch is re-armed, so landing on a page can never make a pot jump
+ * its parameter. */
+static void TestPagerGoToPage()
+{
+    struct FakeButton : IButton
+    {
+        bool  pressed = false;
+        bool  Pressed() const override { return pressed; }
+        bool  RisingEdge() override { return false; }
+        bool  FallingEdge() override { return false; }
+        float TimeHeldMs() const override { return 0.0f; }
+    } button;
+
+    Pager pager(button, 3, 2);
+
+    /* Seed every page CAUGHT: SetStored with the pot already sitting on the
+     * value takes InitCatch's proximity path.  Starting caught is what makes
+     * the assertions below discriminate — a jump that forgot to re-arm would
+     * leave them caught, and each check would catch it. */
+    const float on_stored[2] = {0.10f, 0.90f};
+    for (uint8_t pg = 0; pg < 3u; pg++)
+    {
+        pager.SetStored(pg, 0, 0.10f, on_stored);
+        pager.SetStored(pg, 1, 0.90f, on_stored);
+    }
+    CHECK(pager.Caught(0));
+    CHECK(pager.Caught(1));
+
+    /* The pots have since been turned well away from every stored value —
+     * precisely the situation catch exists to defend against. */
+    const float moved[2] = {0.90f, 0.10f};
+
+    /* Non-adjacent jump: the cyclic advance could never reach 2 from 0 in a
+     * single step, so this exercises real direct addressing. */
+    pager.GoToPage(2, moved);
+    CHECK_EQ(pager.Page(), uint8_t{2});
+    CHECK(!pager.Caught(0));
+    CHECK(!pager.Caught(1));
+
+    /* Jump home — likewise re-arms rather than letting page 0's stale
+     * caught state hand the pots straight to the parameters. */
+    pager.GoToPage(0, moved);
+    CHECK_EQ(pager.Page(), uint8_t{0});
+    CHECK(!pager.Caught(0));
+    CHECK(!pager.Caught(1));
+
+    /* Out of range is ignored — neither the page nor catch state moves. */
+    pager.Update(on_stored, 1);           /* settle page 0 back to caught */
+    CHECK(pager.Caught(0));
+    pager.GoToPage(3, moved);
+    CHECK_EQ(pager.Page(), uint8_t{0});
+    CHECK(pager.Caught(0));
+
+    /* Re-issuing the jump on the page already showing still re-arms catch.
+     * This is exactly why a caller driven by a held gesture must
+     * edge-trigger: firing it every frame of a hold would leave the pots
+     * permanently uncaught. */
+    pager.GoToPage(0, moved);
+    CHECK(!pager.Caught(0));
+
+    /* Button-gesture state is untouched: an advance already latched from a
+     * release still applies on the next Update().  Gestures that involve
+     * the pager's own button must pair the jump with ConsumeButton(). */
+    button.pressed = true;
+    pager.PollButtons(2, false);
+    button.pressed = false;
+    pager.PollButtons(3, false);          /* falling edge → advance latched */
+    pager.GoToPage(0, moved);
+    CHECK_EQ(pager.Page(), uint8_t{0});
+    pager.Update(moved, 4);
+    CHECK_EQ(pager.Page(), uint8_t{1});
+}
+
 /* ── Main ──────────────────────────────────────────────────────────── */
 
 int main(int argc, char** argv)
@@ -1729,6 +1860,7 @@ int main(int argc, char** argv)
     }
     TestTornWrite();
     TestDescriptorBuilder();
+    TestSettingsGesturesEmission();
     TestAutoDescribe();
     TestAutoDescribeGenericAndOverrides();
     TestButtonsEmission();
@@ -1737,6 +1869,7 @@ int main(int argc, char** argv)
     TestDescriptorJsonValidation();
     TestUseNames();
     TestSettingsLoadCanonicalization();
+    TestPagerGoToPage();
 
     RunParamLockTests(g_checks, g_failures);
     RunButtonTests(g_checks, g_failures);
