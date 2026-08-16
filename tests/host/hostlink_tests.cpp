@@ -31,11 +31,16 @@
 #include "alchemy/surface/page.h"
 #include "alchemy/surface/pager.h"
 #include "alchemy/surface/param_lock.h"
+#include "alchemy/surface/button_bank.h"
 #include "alchemy/surface/preset_name.h"
 #include "alchemy/surface/presets.h"
 #include "alchemy/surface/settings.h"
 #include "alchemy/surface/virtual_button.h"
 #include "alchemy/surface/virtual_knob.h"
+
+#include "button_tests.h"
+#include "fs_tests.h"
+#include "param_lock_tests.h"
 
 using namespace alchemy;
 using namespace alchemy::hostlink;
@@ -677,6 +682,18 @@ static void TestTornWrite()
 
 /* ── Descriptor builder against real surfaces ──────────────────────── */
 
+/* Button roster for the fixture: every §5.5 shape a host must render —
+ * one hardware button doing different jobs on two pages, an anchored
+ * control, a global toggle, host-only state, and momentary entries. */
+static const char* const kLinkZones[3]  = {"Stereo", "Mono", "Mid-Side"};
+static const char* const kRouteZones[3] = {"Pre", "Post", "Off"};
+static const char* const kFiltZones[3]  = {"LP", "BP", "HP"};
+static const char* const kBypassZones[2] = {"Active", "Bypassed"};
+static const char* const kQualityZones[2] = {"Standard", "High"};
+
+/* Bare literal 0 is ctor-ambiguous by design; boards use kButtonB1. */
+constexpr uint8_t kBtnB1 = 0, kBtnB2 = 1, kBtnB3 = 2, kBtnB4 = 3;
+
 struct SurfaceFixture
 {
     RamFlash    flash;
@@ -686,11 +703,36 @@ struct SurfaceFixture
     PresetName  name;
     Presets     presets{g_dummy_qspi};
     TestComp<2> motion{0x33333333u};     /* stands in for ParamLock */
+    ButtonBank  buttons;
 
     SelectorHandle mode;
     KnobHandle     knob;
     BrightnessHandle bright;
     BipolarHandle  bip;
+
+    /* B2 is Stereo Link on page 0 and Dist Routing on page 1; B3 fires
+     * a trigger on page 0 and cycles the filter on page 1. */
+    VirtualButton link  = VirtualButton(kBtnB2, "Stereo Link")
+                              .Ident("b.link").Selector(kLinkZones);
+    VirtualButton route = VirtualButton(kBtnB2, "Dist Routing")
+                              .Ident("b.route").Selector(kRouteZones)
+                              .Anchor("p0.1");
+    VirtualButton filt  = VirtualButton(kBtnB3, "Filter Mode")
+                              .Ident("b.filt").Selector(kFiltZones)
+                              .Default(1).Anchor("p1.0");
+    VirtualButton bypass = VirtualButton(kBtnB4, "Bypass")
+                               .Ident("b.bypass").Selector(kBypassZones);
+    VirtualButton quality = VirtualButton("b.quality", "Render Quality")
+                                .Selector(kQualityZones);
+    VirtualButton trig  = VirtualButton(kBtnB3, "Trigger")
+                              .Ident("b.trig")
+                              .Tap(+[](void*) {}, "Fire the envelope");
+    VirtualButton pgbtn = VirtualButton(kBtnB1, "Page")
+                              .Ident("b.page")
+                              .Tap(+[](void*) {}, "Next Page");
+
+    Page btn_page_a{0};
+    Page btn_page_b{1};
 
     SurfaceFixture()
     {
@@ -700,9 +742,17 @@ struct SurfaceFixture
                          .Range(0.05f, 0.35f).Default(0.2f);
         bip    = settings.Page(3).Pot(2).Bipolar().Default(1.0f);
 
+        btn_page_a.Buttons(link, trig);
+        btn_page_b.Buttons(route, filt);
+        buttons.Pages(btn_page_a, btn_page_b);
+        buttons.Global(bypass);
+        buttons.Global(quality);
+        buttons.Global(pgbtn);
+
         presets.Manage(pager);
         presets.Manage(motion);
         presets.Manage(settings);
+        presets.Manage(buttons);
         presets.Manage(name);            /* last: offsets stay stable */
         presets.Init(flash.Ops(), flash.Base());
 
@@ -717,6 +767,18 @@ static const char* const kAltIds[18] = {
     "b0", "b1", "b2", "b3", "b4", "b5",
     "e0", "e1", "e2", "e3", "e4", "e5",
 };
+
+/* The fixture's buttons component, in roster order — modal entries
+ * first, then one dense byte per stateful button (protocol §5.5). */
+static bool EmitFixtureButtons(DescriptorBuilder& db, SurfaceFixture& sf)
+{
+    bool ok = db.BeginButtons("buttons", sf.buttons);
+    for (uint8_t i = 0; ok && i < sf.buttons.NumModal(); i++)
+        ok &= db.ButtonsModal(*sf.buttons.ModalAt(i), sf.buttons.ModalPage(i));
+    for (uint8_t i = 0; ok && i < sf.buttons.NumCells(); i++)
+        ok &= db.ButtonsField(*sf.buttons.CellAt(i), i, sf.buttons.CellPage(i));
+    return ok && db.EndButtons();
+}
 
 static std::string BuildTestDescriptor(SurfaceFixture& sf, bool& ok)
 {
@@ -754,6 +816,7 @@ static std::string BuildTestDescriptor(SurfaceFixture& sf, bool& ok)
     ok &= db.SettingsField(1, 0, "s.bright", "Brightness", nullptr);
     ok &= db.SettingsField(3, 2, "s.atten", "Atten 3", nullptr);
     ok &= db.EndSettings();
+    ok &= EmitFixtureButtons(db, sf);
     ok &= db.Name("name", sf.name);
     const uint32_t len = db.Finish();
     ok &= (len > 0);
@@ -798,9 +861,34 @@ static void TestDescriptorBuilder()
 
     /* Settings component size must equal its SerializedSize (13). */
     CHECK_EQ(sf.settings.SerializedSize(), size_t(13));
-    /* Total size = 72 + 8 + 13 + 24 (name) = 117. */
-    CHECK(json.find("\"size\":117") != std::string::npos);
+    /* Total size = 72 + 8 + 13 + 5 (buttons) + 24 (name) = 122. */
+    CHECK(json.find("\"size\":122") != std::string::npos);
     CHECK(json.find("\"id\":\"name\",\"kind\":\"name\"") != std::string::npos);
+
+    /* Buttons (§5.5): one dense byte per stateful button, modal first.
+     * B2 is Stereo Link on page 0 and Dist Routing on page 1; the
+     * anchors name pager fields in an earlier component. */
+    CHECK(json.find("\"kind\":\"buttons\",\"hash\":") != std::string::npos);
+    CHECK(json.find("\"id\":\"b.trig\",\"name\":\"Trigger\",\"index\":2,\"page\":0")
+          != std::string::npos);
+    CHECK(json.find("\"label\":\"Fire the envelope\"") != std::string::npos);
+    CHECK(json.find("\"id\":\"b.link\",\"name\":\"Stereo Link\",\"off\":0,"
+                    "\"page\":0,\"type\":\"enum\",\"zones\":3,\"def\":0")
+          != std::string::npos);
+    CHECK(json.find("\"disp\":{\"kind\":\"enum\",\"labels\":[\"Stereo\","
+                    "\"Mono\",\"Mid-Side\"]}")
+          != std::string::npos);
+    CHECK(json.find("\"anchor\":\"p0.1\"") != std::string::npos);
+    CHECK(json.find("\"anchor\":\"p1.0\"") != std::string::npos);
+    CHECK(json.find("\"btn\":{\"index\":1,\"action\":\"cycle\",")
+          != std::string::npos);
+    /* Two zones read as a toggle. */
+    CHECK(json.find("\"btn\":{\"index\":3,\"action\":\"toggle\",")
+          != std::string::npos);
+    /* Host-only state: no btn object, and no page key (global). */
+    const auto q = json.find("\"id\":\"b.quality\"");
+    CHECK(q != std::string::npos);
+    CHECK(json.find("\"btn\":", q) > json.find("}]}", q));
 
     /* Declaring a field on a non-persisted slot must fail the build. */
     {
@@ -836,6 +924,62 @@ static void TestDescriptorBuilder()
         db.EndPager();
         CHECK_EQ(db.Finish(), 0u);
     }
+
+    /* A settings surface WITHOUT UsePresets must not emit a gestures
+     * key at all — the array exists only when gesture pots exist.  The
+     * probe is shape-scoped ("gestures":[{"page") because buttons
+     * legitimately emit a gestures key of their own per chip. */
+    CHECK(json.find("\"gestures\":[{\"page\"") == std::string::npos);
+}
+
+/* UsePresets marks two pots as gesture-owned.  They persist no bytes, so
+ * they can never be SettingsFields — the descriptor must still surface
+ * them (display-only "gestures" entries) so a host can mirror the panel
+ * instead of rendering the preset pots as unexplained gaps. */
+static void TestSettingsGesturesEmission()
+{
+    RamFlash   flash;
+    AlchemyLab hw;
+    Pager      pager{hw.buttons[0], 3, 6};
+    Settings   settings{hw, &pager};
+    Presets    presets{g_dummy_qspi};
+
+    auto mode = settings.Page(0).Pot(0).Selector(4).Default(1);
+    auto gain = settings.Page(0).Pot(5).Knob().Default(0.5f);
+    settings.UsePresets(presets);        /* claims page 0, pots 2 + 3 */
+    presets.Manage(settings);
+    presets.Init(flash.Ops(), flash.Base());
+
+    static char buf[8192];
+    DescriptorBuilder db(buf, sizeof buf, presets);
+    bool ok = db.Begin({"gestmod", "Gestures", "0.0.1", "gitg", "0.1.0", "v1"});
+    ok &= db.BeginSettings("settings", settings);
+    ok &= db.SettingsField(0, 0, "s.mode", "Mode", nullptr);
+    ok &= db.SettingsField(0, 5, "s.gain", "Gain", nullptr);
+    /* Gesture pots are not fields — declaring one must fail the build
+     * (checked on a scratch builder so the real one stays clean). */
+    {
+        static char buf2[8192];
+        DescriptorBuilder db2(buf2, sizeof buf2, presets);
+        db2.Begin({"x", "x", "1", "g", "s", "v1"});
+        db2.BeginSettings("settings", settings);
+        CHECK(!db2.SettingsField(0, 2, "bad", "Bad", nullptr));
+    }
+    ok &= db.EndSettings();
+    const uint32_t len = db.Finish();
+    CHECK(ok);
+    CHECK(len > 0u);
+    const std::string json(buf, len);
+
+    /* Both gesture pots, page-major order, SDK-authored names. */
+    CHECK(json.find("\"gestures\":["
+                    "{\"page\":0,\"pot\":2,\"name\":\"Preset Slot\"},"
+                    "{\"page\":0,\"pot\":3,\"name\":\"Save / Load\"}]")
+          != std::string::npos);
+    /* Emitted on the settings component, before its fields array. */
+    CHECK(json.find("\"gestures\":") < json.find("\"fields\":"));
+
+    (void)mode; (void)gain;
 }
 
 /* ── Descriptor auto-derivation (describe.h) ───────────────────────── */
@@ -1043,9 +1187,24 @@ static void TestAutoDescribeGenericAndOverrides()
 
 static void TestButtonsEmission()
 {
-    RamFlash    flash;
-    Presets     presets{g_dummy_qspi};
-    TestComp<2> comp{0x77777777u};
+    /* Controls refs must resolve against emitted fields (Finish()
+     * validates them), so the fixture self-describes the two targets. */
+    struct ModeComp : TestComp<2>
+    {
+        ModeComp() : TestComp<2>(0x77777777u) {}
+        bool Describe(ComponentWriter& w) const override
+        {
+            bool ok = w.Field("mode.source", "Source", 0, FieldType::Enum,
+                              0.f, "{\"kind\":\"enum\"}", 3);
+            ok &= w.Field("mode.sub", "Sub", 1, FieldType::Enum, 0.f,
+                          "{\"kind\":\"enum\"}", 2);
+            return ok;
+        }
+    };
+
+    RamFlash flash;
+    Presets  presets{g_dummy_qspi};
+    ModeComp comp;
     presets.Manage(comp);
     presets.Init(flash.Ops(), flash.Base());
 
@@ -1363,6 +1522,7 @@ static void TestDescriptorJsonValidation()
         ok &= db.Opaque("motion", sf.motion, "m");
         ok &= db.BeginSettings("settings", sf.settings);
         ok &= db.EndSettings();
+        ok &= EmitFixtureButtons(db, sf);
         ok &= db.Name("name", sf.name);
         CHECK(ok);
         CHECK_EQ(db.Finish(), 0u);
@@ -1396,102 +1556,6 @@ static void TestUseNames()
     CHECK(p2.ManagedAt(2)->DescribeKind() == Serializable::DescKind::Name);
     CHECK_EQ(p1.LiveSchemaHash(), p2.LiveSchemaHash());
     CHECK_EQ(p1.LiveSize(), p2.LiveSize());
-}
-
-/* ParamLock's Serializable path stages one ~1 KiB SavedEntry at a time
- * (not the whole array on the stack); the byte stream must stay exactly
- * the flat SavedEntry array Restore→Capture reproduces. */
-static void TestParamLockSerializeRoundTrip()
-{
-    struct FakeButton : IButton
-    {
-        bool  Pressed() const override { return false; }
-        bool  RisingEdge() override { return false; }
-        bool  FallingEdge() override { return false; }
-        float TimeHeldMs() const override { return 0.0f; }
-    } button;
-
-    ParamLock<4> locks(button);
-    using Entry = ParamLock<4>::SavedEntry;
-    CHECK_EQ(locks.SerializedSize(), size_t{4} * sizeof(Entry));
-
-    /* Craft an image: slots 0 and 2 active with distinct ramps (zero-
-     * padded past `length`, exactly as Capture emits), slots 1 and 3
-     * inactive (all zeros). */
-    std::vector<uint8_t> image(locks.SerializedSize(), 0u);
-    {
-        Entry e{};
-        e.active      = 1u;
-        e.length      = 5u;
-        e.record_base = 0.25f;
-        for (uint16_t j = 0; j < e.length; j++)
-            e.buf[j] = 0.01f * static_cast<float>(j + 1);
-        std::memcpy(image.data(), &e, sizeof(e));
-    }
-    {
-        Entry e{};
-        e.active      = 1u;
-        e.length      = kParamLockBufferLen; /* full motion buffer */
-        e.record_base = -1.0f;
-        for (uint16_t j = 0; j < e.length; j++)
-            e.buf[j] = (j & 1u) ? 0.5f : -0.5f;
-        std::memcpy(image.data() + 2u * sizeof(Entry), &e, sizeof(e));
-    }
-
-    CHECK(locks.Deserialize(image.data()));
-
-    std::vector<uint8_t> out(locks.SerializedSize(), 0xAAu);
-    locks.Serialize(out.data());
-    CHECK(out == image);
-}
-
-/* Playback lives in Advance(), not Update(): Update() only consumes
- * gesture edges, so ControlLoop can keep automation running (Advance
- * every frame) while Settings suspends the gesture path (Update). */
-static void TestParamLockAdvanceSplit()
-{
-    struct FakeButton : IButton
-    {
-        bool  Pressed() const override { return false; }
-        bool  RisingEdge() override { return false; }
-        bool  FallingEdge() override { return false; }
-        float TimeHeldMs() const override { return 0.0f; }
-    } button;
-
-    ParamLock<4> locks(button);
-    using Entry = ParamLock<4>::SavedEntry;
-
-    /* Slot 0: active 3-sample loop around record_base 0.5. */
-    std::vector<uint8_t> image(locks.SerializedSize(), 0u);
-    Entry e{};
-    e.active      = 1u;
-    e.length      = 3u;
-    e.record_base = 0.5f;
-    e.buf[0]      = 0.6f;
-    e.buf[1]      = 0.7f;
-    e.buf[2]      = 0.9f;
-    std::memcpy(image.data(), &e, sizeof(e));
-    CHECK(locks.Deserialize(image.data()));
-
-    const float phys[4] = {};
-    CHECK(locks.Delta(0) == 0.6f - 0.5f);
-
-    /* Update() with no pending edges must not move the play head. */
-    locks.Update(phys, 0u);
-    locks.Update(phys, 1u);
-    CHECK(locks.Delta(0) == 0.6f - 0.5f);
-
-    /* Advance() steps the loop — including through the LockSource base,
-     * which is how ControlLoop drives it. */
-    locks.Advance();
-    CHECK(locks.Delta(0) == 0.7f - 0.5f);
-    static_cast<LockSource&>(locks).Advance();
-    CHECK(locks.Delta(0) == 0.9f - 0.5f);
-    locks.Advance();
-    CHECK(locks.Delta(0) == 0.6f - 0.5f); /* wrapped */
-
-    /* Inactive slots are unaffected either way. */
-    CHECK(locks.Delta(1) == 0.0f);
 }
 
 /* ── Golden vector emission ────────────────────────────────────────── */
@@ -1591,7 +1655,7 @@ static int EmitGolden(const char* path)
         std::vector<uint8_t> rd(7);
         rd[0] = 3u;
         WrU32(rd.data() + 1, 0u);
-        WrU16(rd.data() + 5, 498u);
+        WrU16(rd.data() + 5, static_cast<uint16_t>(kMaxBody - 14u));
         record(Cmd::ReadSlot, rd);
 
         for (size_t i = 0; i < log.size(); i++)
@@ -1600,8 +1664,13 @@ static int EmitGolden(const char* path)
                          i + 1 < log.size() ? "," : "");
     }
 
+    std::fprintf(f, "  ],\n");
+
+    /* Filesystem-block exchange (protocol §8) on the RAM-disk stack. */
+    EmitFsGolden(f);
+
     /* Real descriptor built from real surfaces (hex-encoded JSON). */
-    std::fprintf(f, "  ],\n  \"descriptor\": {\n");
+    std::fprintf(f, "  \"descriptor\": {\n");
     {
         SurfaceFixture sf;
         bool ok = false;
@@ -1620,6 +1689,152 @@ static int EmitGolden(const char* path)
     std::fclose(f);
     std::printf("golden vectors written to %s\n", path);
     return 0;
+}
+
+/* ── Settings load canonicalization ────────────────────────────────── */
+
+/* Regression: Settings keeps two representations per slot (pot.stored
+ * and value/value_idx).  Deserialize used to fill only one half per
+ * kind and rely on the active-page Update tick to reconcile — which
+ * (a) never ran for Knob/Bipolar until the page was viewed in the
+ * menu, so loaded values were inaudible, and (b) ran in the WRONG
+ * direction for Selectors (value_idx re-derived from stale pot.stored),
+ * so viewing a page in the menu reverted the loaded selection.
+ * Deserialize must leave BOTH halves canonical, immediately. */
+static void TestSettingsLoadCanonicalization()
+{
+    SurfaceFixture sf;
+    Settings&      st = sf.settings;
+
+    /* Layout (page-major, pot order):
+     *   pg0: selector(4 zones) 1B, knob 4B; pg1: brightness 4B;
+     *   pg3: bipolar 4B — 13 bytes total. */
+    CHECK_EQ(st.SerializedSize(), size_t(13));
+
+    uint8_t blob[13];
+    blob[0] = 3u;                              /* selector: zone 3 (default 2) */
+    const float knob_v = 0.9f;                 /* knob: 0.9 (default 0.5)      */
+    const float bri_t  = 1.0f;                 /* brightness norm 1 → hi=0.35  */
+    const float bip_t  = 0.25f;                /* bipolar norm 0.25 → −0.5     */
+    std::memcpy(blob + 1, &knob_v, 4u);
+    std::memcpy(blob + 5, &bri_t,  4u);
+    std::memcpy(blob + 9, &bip_t,  4u);
+
+    CHECK(st.Deserialize(blob));
+
+    /* Loaded values must be visible through the handles IMMEDIATELY —
+     * no settings-menu visit, no Update tick required. */
+    CHECK_EQ(sf.mode.Value(), uint8_t(3));
+    CHECK(sf.knob.Value() == 0.9f);
+    CHECK(sf.bip.Value()  == -0.5f);
+    {
+        const float b = sf.bright.Value();
+        CHECK(b > 0.3499f && b < 0.3501f);
+    }
+
+    /* Selector pot side must be canonical (zone centre): the active-page
+     * tick derives value_idx FROM pot.stored, so a stale pot side is
+     * exactly the bug that reverted loaded selections in the menu. */
+    CHECK(st.StoredNormAt(0, 0) == 0.875f);    /* (3 + 0.5) / 4 */
+
+    /* Update ticks with the menu INACTIVE (pending re-arm included)
+     * must not disturb the loaded state. */
+    static const float kPhys[kNumPots] = {};
+    for (uint32_t i = 0; i < 3u; i++) st.Update(kPhys, 100u + 16u * i);
+    CHECK_EQ(sf.mode.Value(), uint8_t(3));
+    CHECK(sf.knob.Value() == 0.9f);
+    CHECK(sf.bip.Value()  == -0.5f);
+
+    /* Round-trip idempotence: serialize back → byte-identical blob. */
+    uint8_t out[13] = {};
+    st.Serialize(out);
+    CHECK(std::memcmp(out, blob, sizeof blob) == 0);
+
+    /* Hostile live-push bytes: out-of-range selector index clamps to
+     * the last zone; NaN floats land at 0 instead of poisoning the
+     * catch/render math. */
+    blob[0] = 200u;
+    const uint32_t kQnan = 0x7FC00000u;
+    std::memcpy(blob + 1, &kQnan, 4u);
+    CHECK(st.Deserialize(blob));
+    CHECK_EQ(sf.mode.Value(), uint8_t(3));     /* 4 zones → clamp to 3 */
+    CHECK(sf.knob.Value() == 0.0f);
+    CHECK(st.StoredNormAt(0, 1) == 0.0f);
+}
+
+/* Pager::GoToPage — direct page addressing for "home"-style gestures.
+ * The contract mirrors the cyclic advance inside Update(): the destination
+ * page's catch is re-armed, so landing on a page can never make a pot jump
+ * its parameter. */
+static void TestPagerGoToPage()
+{
+    struct FakeButton : IButton
+    {
+        bool  pressed = false;
+        bool  Pressed() const override { return pressed; }
+        bool  RisingEdge() override { return false; }
+        bool  FallingEdge() override { return false; }
+        float TimeHeldMs() const override { return 0.0f; }
+    } button;
+
+    Pager pager(button, 3, 2);
+
+    /* Seed every page CAUGHT: SetStored with the pot already sitting on the
+     * value takes InitCatch's proximity path.  Starting caught is what makes
+     * the assertions below discriminate — a jump that forgot to re-arm would
+     * leave them caught, and each check would catch it. */
+    const float on_stored[2] = {0.10f, 0.90f};
+    for (uint8_t pg = 0; pg < 3u; pg++)
+    {
+        pager.SetStored(pg, 0, 0.10f, on_stored);
+        pager.SetStored(pg, 1, 0.90f, on_stored);
+    }
+    CHECK(pager.Caught(0));
+    CHECK(pager.Caught(1));
+
+    /* The pots have since been turned well away from every stored value —
+     * precisely the situation catch exists to defend against. */
+    const float moved[2] = {0.90f, 0.10f};
+
+    /* Non-adjacent jump: the cyclic advance could never reach 2 from 0 in a
+     * single step, so this exercises real direct addressing. */
+    pager.GoToPage(2, moved);
+    CHECK_EQ(pager.Page(), uint8_t{2});
+    CHECK(!pager.Caught(0));
+    CHECK(!pager.Caught(1));
+
+    /* Jump home — likewise re-arms rather than letting page 0's stale
+     * caught state hand the pots straight to the parameters. */
+    pager.GoToPage(0, moved);
+    CHECK_EQ(pager.Page(), uint8_t{0});
+    CHECK(!pager.Caught(0));
+    CHECK(!pager.Caught(1));
+
+    /* Out of range is ignored — neither the page nor catch state moves. */
+    pager.Update(on_stored, 1);           /* settle page 0 back to caught */
+    CHECK(pager.Caught(0));
+    pager.GoToPage(3, moved);
+    CHECK_EQ(pager.Page(), uint8_t{0});
+    CHECK(pager.Caught(0));
+
+    /* Re-issuing the jump on the page already showing still re-arms catch.
+     * This is exactly why a caller driven by a held gesture must
+     * edge-trigger: firing it every frame of a hold would leave the pots
+     * permanently uncaught. */
+    pager.GoToPage(0, moved);
+    CHECK(!pager.Caught(0));
+
+    /* Button-gesture state is untouched: an advance already latched from a
+     * release still applies on the next Update().  Gestures that involve
+     * the pager's own button must pair the jump with ConsumeButton(). */
+    button.pressed = true;
+    pager.PollButtons(2, false);
+    button.pressed = false;
+    pager.PollButtons(3, false);          /* falling edge → advance latched */
+    pager.GoToPage(0, moved);
+    CHECK_EQ(pager.Page(), uint8_t{0});
+    pager.Update(moved, 4);
+    CHECK_EQ(pager.Page(), uint8_t{1});
 }
 
 /* ── Main ──────────────────────────────────────────────────────────── */
@@ -1645,6 +1860,7 @@ int main(int argc, char** argv)
     }
     TestTornWrite();
     TestDescriptorBuilder();
+    TestSettingsGesturesEmission();
     TestAutoDescribe();
     TestAutoDescribeGenericAndOverrides();
     TestButtonsEmission();
@@ -1652,8 +1868,12 @@ int main(int argc, char** argv)
     TestJsonCheck();
     TestDescriptorJsonValidation();
     TestUseNames();
-    TestParamLockSerializeRoundTrip();
-    TestParamLockAdvanceSplit();
+    TestSettingsLoadCanonicalization();
+    TestPagerGoToPage();
+
+    RunParamLockTests(g_checks, g_failures);
+    RunButtonTests(g_checks, g_failures);
+    RunFsTests(g_checks, g_failures);
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

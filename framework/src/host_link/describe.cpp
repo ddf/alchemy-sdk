@@ -7,6 +7,7 @@
 
 #include <cstdio>
 
+#include "alchemy/surface/button_bank.h"
 #include "alchemy/surface/page.h"
 #include "alchemy/surface/pager.h"
 #include "alchemy/surface/presets.h"
@@ -235,6 +236,20 @@ const char* SettingsKindName(SettingsKind k)
     }
 }
 
+bool DescribeButtons(DescriptorBuilder& db, const ButtonBank& bank,
+                     const char* id)
+{
+    bool ok = db.BeginButtons(id, bank);
+    ok      = ok && bank.Ok();   /* declaration errors latched at freeze */
+
+    for (uint8_t i = 0; ok && i < bank.NumModal(); i++)
+        ok = db.ButtonsModal(*bank.ModalAt(i), bank.ModalPage(i));
+    for (uint8_t i = 0; ok && i < bank.NumCells(); i++)
+        ok = db.ButtonsField(*bank.CellAt(i), i, bank.CellPage(i));
+
+    return ok && db.EndButtons();
+}
+
 bool DescribeSettings(DescriptorBuilder& db, const Settings& st,
                       const char* id)
 {
@@ -289,11 +304,15 @@ uint32_t RenderDescriptor(char* buf, size_t cap,
                           const DescribeOverride* overrides,
                           uint8_t num_overrides,
                           const VirtualButton* buttons,
-                          uint8_t num_buttons)
+                          uint8_t num_buttons,
+                          const char* const* root_fragments,
+                          uint8_t num_root_fragments)
 {
     DescriptorBuilder db(buf, cap, presets);
     bool ok = db.Begin(info);
     if (ok) ok = db.Buttons(buttons, num_buttons);
+    for (uint8_t i = 0u; ok && i < num_root_fragments; i++)
+        ok = db.RawRoot(root_fragments[i]);
 
     uint8_t n_opaque = 0u;
     for (uint8_t i = 0; ok && i < presets.NumManaged(); i++)
@@ -328,6 +347,10 @@ uint32_t RenderDescriptor(char* buf, size_t cap,
                 continue;
             case Serializable::DescKind::Name:
                 ok = db.Name("name", *s);
+                continue;
+            case Serializable::DescKind::Buttons:
+                ok = DescribeButtons(db, static_cast<const ButtonBank&>(*s),
+                                     "buttons");
                 continue;
             default:
                 break;

@@ -35,16 +35,20 @@ Decoded frame layout (all multi-byte fields little-endian):
 | 0 | 1 | `proto` | `0x01` |
 | 1 | 1 | `type`  | request `0x01..0x7F`; response = request `\| 0x80` |
 | 2 | 2 | `seq`   | host-chosen; echoed verbatim in the response |
-| 4 | 2 | `len`   | body length `N`, `0..512` |
+| 4 | 2 | `len`   | body length `N`, `0..max_body` |
 | 6 | N | `body`  | |
 | 6+N | 4 | `crc32` | over bytes `0 .. 6+N-1` (header + body) |
 
 - CRC32: reflected, polynomial `0xEDB88320`, init `0xFFFFFFFF`, final XOR
   `0xFFFFFFFF` (same function the preset store uses).
-- Max decoded frame = `6 + 512 + 4 = 522` bytes → max wire frame ≈ 526 bytes
-  including COBS overhead and delimiter.
-- A frame that fails CRC, has `proto != 1`, `len > 512`, or truncates is
-  answered with an `ERR` frame (`type = 0xFF`) carrying `status =
+- `max_body` is a per-module build constant announced in HELLO — `512` by
+  default, up to `2048` on storage-capable modules.  Hosts must not send a
+  body larger than the announced value; the HELLO exchange itself always
+  fits the 512-byte minimum, so discovery is never a chicken-and-egg
+  problem.  Max decoded frame = `6 + max_body + 4` bytes → max wire frame
+  is that plus COBS overhead (1 byte per 254) and the delimiter.
+- A frame that fails CRC, has `proto != 1`, `len > max_body`, or truncates
+  is answered with an `ERR` frame (`type = 0xFF`) carrying `status =
   FRAME_ERROR` and the request's `seq` when recoverable (else `seq = 0`).
   Hosts match responses by `seq`; an unmatched `ERR` should be logged and
   otherwise ignored.
@@ -70,6 +74,15 @@ NUL).
 | 8 | `FLASH_FAIL` | erase/write failed |
 | 9 | `BUSY` | transient; retry |
 | 10 | `FRAME_ERROR` | transport-level frame reject (only in `ERR` frames) |
+| 11 | `FS_NO_CARD` | no SD card present / volume unmountable (§8) |
+| 12 | `FS_NO_FILE` | path does not exist |
+| 13 | `FS_EXISTS` | target exists and `overwrite` not set |
+| 14 | `FS_LOCKED` | file is in use by the firmware (e.g. active recording) |
+| 15 | `FS_FULL` | volume out of space |
+| 16 | `FS_IO` | filesystem / card I/O error |
+
+Hosts must tolerate status values they do not recognize (render a generic
+"device error (N)"), since new commands may introduce new codes.
 
 ## 3. Commands
 
@@ -178,6 +191,9 @@ Request: `u8 mode` — `0` = normal reset, `1` = reset into the DFU bootloader
 (hand-off to the firmware-update flow).  Response `OK` is sent first; the
 device resets ~100 ms later.
 
+### 0x50–0x5F Filesystem block
+Optional SD-card access — commands, invariants, and host guidance in §8.
+
 ## 4. Concurrency model
 
 All command execution happens in the module's control-loop context, never in
@@ -271,6 +287,15 @@ host's page tabs.  An empty-string entry means "no label for this page" —
 the host falls back to a generic label (colors likewise).  Colors are CSS
 hex strings; hosts must validate before use and ignore malformed values.
 
+`gestures` is optional on `settings` components: an array of
+`{ "page", "pot", "name" }` entries marking pots that belong to an
+on-device gesture rather than a persisted field (the SDK emits the
+`UsePresets` save/load pots as `"Preset Slot"` / `"Save / Load"`).
+Nothing is stored behind a gesture pot — the entry exists so a host can
+mirror the module's settings pages exactly, labeling those positions
+instead of rendering them as unexplained gaps.  Hosts that predate the
+key ignore it.
+
 Component `kind`s: `pager` and `settings` are field-bearing; `opaque`
 round-trips byte-exact and is shown as a summary chip (e.g. "Motion
 recording · clear"); `name` is a fixed NUL-padded UTF-8 buffer holding
@@ -280,15 +305,16 @@ the final byte is always NUL).
 
 Any other kind (the SDK emits `fields` for custom components) is
 field-bearing when it carries a `fields` array — hosts render it as a
-plain editable group labeled by the optional `name` key; its fields omit
-`page`/`pot`.  Unknown kinds **without** fields must be treated as
-opaque.
+plain editable group labeled by the optional `name` key.  Fields of
+*generic* kinds omit `page`/`pot`; a defined kind may specify its own
+field keys (`buttons` fields carry `page`, §5.5).  Unknown kinds
+**without** fields must be treated as opaque.
 
 Custom kinds may also emit per-kind metadata keys (e.g. `slots`,
 `slotSize`, `layout`) between the header and the `fields` array — hosts
 that recognize the kind consume them, others ignore them and fall back
 to the generic field-bearing / opaque rendering.  The `param_locks`
-kind (§5.5) is one example.
+kind (§5.4) is one example.
 
 ### 5.1 Auto-description
 
@@ -306,11 +332,26 @@ Cross-field references (`maxFrom`, `curveFrom`, `layoutFrom`,
 `alt.layoutFrom`) name field ids **within the same blob**; hosts resolve them
 against current (edited) values so displays stay live during editing.
 
-### 5.2 Buttons
+### 5.2 Optional root keys
+
+Beyond `buttons` (§5.3), a module with SD storage adds a `storage` root
+key (see §8) so hosts can light up file-management UI without probing:
+
+```jsonc
+"storage": { "sd": true, "fsv": 1 }
+```
+
+Unknown root keys must be ignored (additive, per §6).
+
+### 5.3 Buttons (root metadata array — legacy)
 
 A module may declare its physical push buttons at the descriptor root as
-a `buttons` array (adjacent to `components`).  Buttons are metadata only
-— they are neither addressable nor mutable through the wire protocol.
+a `buttons` array (adjacent to `components`).  This is the original,
+metadata-only form; modules built on the `ButtonBank` surface emit a
+`buttons` *component* instead (§5.5), which additionally carries the
+buttons' persisted state per page.  A module uses one form or the other,
+and hosts must keep supporting both.  Root-array buttons are neither
+addressable nor mutable through the wire protocol.
 Their purpose is to let the host render meaningful chips ("what does B2
 do?  what's it currently set to?") and, for state-controlling buttons,
 back-reference the preset field(s) the button mutates so the current
@@ -357,7 +398,7 @@ value can be shown next to the button and read back consistently.
 The array is optional; a module that omits it is rendered without a
 button panel.
 
-### 5.3 Parameter locks (`kind: "param_locks"`)
+### 5.4 Parameter locks (`kind: "param_locks"`)
 
 A `param_locks` component wraps a slot-array of looping-automation
 recordings that live in the preset blob.  The component is opaque at
@@ -402,6 +443,64 @@ not recognize `param_locks` must fall back to the generic no-fields
 rendering (an unnamed chip) — the schema hash still guarantees
 byte-exact round-trip.
 
+### 5.5 Buttons component (`kind: "buttons"`)
+
+A module built on the `ButtonBank` surface emits its buttons as one
+component.  Stateful buttons are **ordinary editable enum fields** — one
+byte each, dense, in roster order — so a host that has never heard of
+this kind still renders them as a plain editable group and can read,
+edit, and write them through the normal blob paths.  A button-aware host
+uses the extra keys to draw each button inside its page card instead.
+
+```jsonc
+{ "id": "buttons", "kind": "buttons", "hash": 2864434397,
+  "size": 2, "off": 96,
+  "modal": [                       // momentary buttons: metadata only
+    { "id": "trig", "name": "Trigger", "index": 1, "page": 0,
+      "gestures": [ { "gesture": "tap", "label": "Fire the kick" } ] }
+  ],
+  "fields": [
+    { "id": "flt.mode", "name": "Filter", "off": 0, "page": 0,
+      "type": "enum", "zones": 3, "def": 0,
+      "disp": { "kind": "enum", "labels": ["LP", "BP", "HP"] },
+      "anchor": "flt.cutoff",
+      "btn": { "index": 2, "action": "cycle",
+               "gestures": [ { "gesture": "tap",
+                               "label": "Cycle LP / BP / HP" } ] } },
+    { "id": "osc.sub", "name": "Sub", "off": 1, "page": 1,
+      "type": "enum", "zones": 2, "def": 0,
+      "disp": { "kind": "enum" },
+      "btn": { "index": 2, "action": "toggle",
+               "gestures": [ { "gesture": "tap",
+                               "label": "Toggle" } ] } }
+  ]
+}
+```
+
+- `page` (fields and modal entries) — the page the button lives on.
+  Omitted when the button appears on several pages or is global:
+  render it on every page.
+- `anchor` — optional attachment: render this control with the named
+  field (typically its companion knob) wherever the host renders that
+  field; where the target is not shown, fall back to the page's plain
+  button group.  Targets are field ids from any component (never
+  `modal` ids); firmware validates the ref at build time, so a host
+  never sees a dangling one — but must still tolerate junk per §6.
+  May appear on fields with no `btn` (host-only state).
+- `btn` — the physical binding: `index` is the hardware button,
+  `action` the primary tap mutation (`cycle` / `toggle` / `set`), and
+  `gestures[]` labeled gestures exactly as in §5.3.  A field without
+  `btn` is host-editable state with no panel gesture.
+- `modal[]` — buttons with no persisted state (page cyclers, triggers,
+  lock recorders).  Metadata only; contributes no blob bytes.  Must
+  precede `fields` when both are present.
+
+The same physical `index` may appear in several entries with different
+`page` values — the same button does different things on different
+pages.  Hosts that do not recognize the kind must ignore `modal`,
+`anchor`, and `btn` per §6 and fall back to the generic field-bearing
+rendering; editing still works, which is the point.
+
 ## 6. Versioning rules
 
 - **Protocol**: breaking wire changes bump `proto` and HELLO's `proto_ver`.
@@ -425,3 +524,231 @@ byte-exact round-trip.
 - WebSerial exposes only VID/PID (`0x0483:0x5740`, the libDaisy CDC
   identity, shared with other Daisy devices) — identify by HELLO, not by
   USB descriptor.
+
+## 8. Filesystem access (commands 0x50–0x5F)
+
+Storage-capable modules expose their SD card's FAT volume through the
+`0x50` command block.  The block is optional: modules without storage
+answer `UNSUPPORTED`, and capable modules additionally advertise it in
+the descriptor root:
+
+```jsonc
+"storage": { "sd": true, "fsv": 1 }
+```
+
+`fsv` versions the filesystem command set itself.  Hosts should treat the
+descriptor key as the fast path and an `FS_INFO` probe as the fallback.
+
+Design invariants, extending §"Design invariants":
+
+- **Path-jailed.**  All paths are absolute within the SD volume; there is
+  no way to address flash, RAM, or any other storage through this block.
+- **Uploads are atomic.**  Host writes stage into `<path>.part` and only
+  an explicitly requested, CRC-verified `FS_COMMIT` renames the staged
+  file onto its final name.  A power cut or abandoned transfer can never
+  leave a torn file under a final name.
+- **Firmware-owned files are protected.**  A file the firmware holds open
+  (e.g. an in-progress recording) is flagged `locked` in listings and
+  refuses host writes, deletion, and renaming with `FS_LOCKED`.  Reads of
+  locked files are allowed.
+- **Nothing is deleted implicitly.**  Stale `.part`/`.partmeta` files
+  from interrupted uploads stay on the card — visible, resumable, and
+  deletable through this same interface — rather than being swept by
+  hidden firmware policy.
+
+### 8.1 Paths
+
+- Absolute, `/`-separated, starting with `/` (the volume root).  The
+  volume prefix (`0:`) never appears on the wire.
+- Total path ≤ 192 bytes; each segment 1–64 bytes.
+- Characters: printable ASCII `0x20..0x7E` excluding `\ : * ? " < > |`.
+  Segments must not be `.` or `..`, must not end with a dot or space.
+- `FS_OPEN_WRITE` targets must not end in `.part` or `.partmeta`
+  (reserved staging suffixes) — `BAD_ARGS`.
+- Violations answer `BAD_ARGS`.
+
+### 8.2 Transfer model
+
+At most **one file transfer** (read or write) is open at a time; opening
+a new one implicitly aborts the previous.  A transfer with no traffic
+for 5 s is aborted (subsequent `FS_READ`/`FS_WRITE` → `BAD_STATE`).  An
+aborted or closed *upload* keeps its `.part`/`.partmeta` staging files
+so it can be resumed (§8.4) or discarded by deleting them.
+
+Directory listing uses an independent cursor (§8.3) and may interleave
+with an open transfer.  The blob transaction (§3) is likewise
+independent: preset traffic and file traffic never conflict.
+
+All commands execute in the module's control-loop context (§4), so host
+file operations serialize naturally with the firmware's own storage work
+(e.g. an SD recorder) — but they contend for the same card bandwidth;
+hosts should expect elevated latency variance while the module is
+actively recording.
+
+### 8.3 Commands
+
+Timestamps are raw FAT format: `u32 mtime = (fdate << 16) | ftime`
+(local device time; modules without a clock write the FAT epoch).  `0`
+means unknown.  Entry `flags` bits: `bit0` directory, `bit1` read-only,
+`bit2` locked by firmware.
+
+#### 0x50 FS_INFO
+Request: empty.  May trigger the deferred mount; allow a 10 s timeout.
+
+An `FS_NO_CARD` response carries a diagnostic trailer so hosts can say
+*why*, not just "no card":
+
+```
+u8 mount_fr        FatFS FRESULT of the failed mount (0xFE = untried)
+u8 disk_init       diskio DSTATUS (0 = controller/card came up)
+sector_probe s0    raw sector 0
+u8 pt_types[4]     MBR partition type IDs from sector 0
+u32 pt1_lba        partition 1 start LBA
+sector_probe p1    partition 1's boot sector (probed only when sector 0
+                   is an MBR with a nonzero first partition)
+
+sector_probe = u8 read_result (diskio DRESULT; 0xFF = not attempted),
+               u8 sig[2] (bytes 510..511), u8 first (byte 0),
+               u8 oem[8] (bytes 3..10), u8 fstype[8] (bytes 82..89)
+```
+
+Evidence beats codes: `pt_types[0] = 0x07` + OEM "EXFAT   " means the
+card is exFAT-formatted; zeroed signatures with `read_result = 0` mean
+the data path returns blanks; a valid "FAT32   " fstype alongside a
+mount failure points at the firmware.  Hosts must tolerate a shorter
+trailer (older firmware).
+Response:
+
+```
+u8  status        (FS_NO_CARD if absent/unmountable → diagnostic trailer)
+u8  card_state    (0 = no card / unmounted, 1 = mounted)
+u8  fs_type       (FatFS values: 2 = FAT16, 3 = FAT32; 0 = unknown)
+u8  flags         (bit0 = free_kib valid, bit1 = firmware storage busy)
+u32 total_kib
+u32 free_kib      (0 when bit0 clear)
+u16 max_name      (max path segment length, 64)
+```
+
+Free space derives from the volume's FSINFO sector; on cards where that
+is unavailable the firmware reports `free_kib` invalid rather than
+stalling to scan the FAT.
+
+#### 0x51 FS_LIST
+Request: `u32 cookie, str path`.  `cookie = 0` starts a listing of
+`path`; continue by echoing the returned `next_cookie` with the same
+path.  The firmware keeps one cursor; a stale or foreign cookie is
+honored by transparently reopening the directory and skipping, so
+listings are always completable (merely slower after eviction).
+Response: `u8 status, u32 next_cookie (0xFFFFFFFF = end), u8 count`,
+then `count` records of `u8 flags, u32 size, u32 mtime, str name`.
+Records are packed to the body limit; order is the on-disk directory
+order, stable while the directory is unmodified.
+
+#### 0x52 FS_STAT
+Request: `str path`.
+Response: `u8 status, u8 flags, u32 size, u32 mtime`.
+
+#### 0x53 FS_OPEN_READ
+Request: `str path`.  Opens the read transfer (aborting any prior
+transfer).  `BAD_ARGS` for directories.
+Response: `u8 status, u32 size, u32 mtime`.
+
+#### 0x54 FS_READ
+Request: `u32 offset, u16 max_len`.
+Response: `u8 status, u32 offset, u16 n, bytes[n]`.  `n == 0` iff
+`offset ≥ size`.  Offsets are arbitrary (the transfer file is seekable)
+and requests are idempotent — see §8.5 for pipelining.
+
+#### 0x55 FS_CLOSE
+Request: empty.  Closes any open transfer.  For an uncommitted upload
+the staging files are kept (resumable); for reads it simply releases
+the file.  Response: `u8 status` (`OK` even if nothing was open).
+
+#### 0x56 FS_OPEN_WRITE
+Request: `u8 flags, u32 total_len, str path`.
+`flags`: `bit0` overwrite existing target, `bit1` create missing parent
+directories, `bit2` resume.
+Opens the write transfer, staging into `<path>.part`.  Without `resume`
+any existing staging files are truncated.  With `resume`, a matching
+`<path>.partmeta` (same `total_len`, consistent `.part` size) lets the
+transfer continue: the response's `resume_offset` tells the host where
+to continue `FS_WRITE`; on any mismatch the firmware restarts cleanly
+and answers `resume_offset = 0`.  `FS_EXISTS` if the final target
+exists and `overwrite` is clear.
+Response: `u8 status, u32 resume_offset`.
+
+#### 0x57 FS_WRITE
+Request: `u32 offset`, then payload bytes (rest of body).  `offset`
+must equal bytes staged so far (strictly in-order; `BAD_ARGS` aborts
+the transfer's session state but keeps staging files for resume).  The
+firmware maintains a running CRC32 of the staged stream and
+periodically checkpoints `{received, crc_state}` into
+`<path>.partmeta`, which is what makes resume after a power cut
+possible.
+Response: `u8 status, u32 received`.
+
+#### 0x58 FS_COMMIT
+Request: `u32 crc32` over all `total_len` bytes.
+Requires the staged byte count to equal `total_len` (`BAD_STATE`
+otherwise).  On CRC match: staging files are finalized — `.partmeta`
+deleted, `.part` renamed onto the final path (unlinking an existing
+target only when `overwrite` was set; a target that appeared since
+`FS_OPEN_WRITE` without `overwrite` fails `FS_EXISTS`).  `BAD_CRC`
+keeps the staging files (host may re-verify / resume).
+Response: `u8 status`, sent after the rename completes (10 s timeout).
+
+#### 0x59 FS_DELETE
+Request: `str path`.  Files and *empty* directories; deleting a
+non-empty directory answers `BAD_STATE` (hosts recurse leaf-first).
+`FS_LOCKED` for firmware-held files.
+Response: `u8 status`.
+
+#### 0x5A FS_MKDIR
+Request: `str path`.  Parents must exist (`FS_NO_FILE` otherwise);
+`FS_EXISTS` if the path already exists.
+Response: `u8 status`.
+
+#### 0x5B FS_RENAME
+Request: `str from, str to`.  Same volume; moves across directories are
+allowed; existing targets are not overwritten (`FS_EXISTS`).
+`FS_LOCKED` for firmware-held sources.
+Response: `u8 status`.
+
+### 8.4 Crash safety and resume
+
+The staging pair written during an upload:
+
+- `<path>.part` — the staged bytes, append-only.
+- `<path>.partmeta` — 16 bytes, rewritten (and synced) every 1 MiB of
+  staged data: `u32 magic "HMPM", u32 total_len, u32 received,
+  u32 crc_state` (the CRC32 of the first `received` staged bytes —
+  the protocol CRC32 is chainable, so this doubles as the resume seed).
+
+A power cut mid-upload therefore loses at most the un-checkpointed tail;
+`FS_OPEN_WRITE(resume)` re-anchors at the last checkpoint (truncating
+any `.part` bytes beyond it) and the host resumes from `resume_offset`.
+The final path only ever appears via the commit-time rename, and
+`FS_COMMIT`'s CRC check covers the resumed whole, not just the tail.
+
+### 8.5 Host implementation notes
+
+- Stop-and-wait applies (§7), with one sanctioned exception: within an
+  open read transfer, hosts MAY keep up to **3** `FS_READ` requests in
+  flight (distinct `seq`, disjoint offsets).  Reads are idempotent and
+  the firmware executes frames in arrival order, so responses arrive in
+  order; a lost frame is recovered by re-requesting that offset.  Do
+  not pipeline any other command.
+- Suggested timeouts: 2 s default; 10 s for `FS_INFO`, `FS_OPEN_READ`,
+  `FS_OPEN_WRITE`, `FS_COMMIT` (deferred mount, card housekeeping).
+- Chunking: `FS_READ max_len ≤ max_body − 7`; `FS_WRITE` payload
+  ≤ `max_body − 4`.
+- Feature detection: descriptor `storage` key, else probe `FS_INFO`
+  and treat `UNSUPPORTED` as "no filesystem".
+- Throughput expectation: bounded by USB Full-Speed CDC and `max_body`
+  — order 250 KB/s at 512-byte bodies, approaching 1 MB/s with
+  2048-byte bodies plus read pipelining.  Surface rates and ETAs in UI
+  for anything beyond a few MB.
+- FAT limits surface as protocol errors, not surprises: FAT32-formatted
+  cards only (`FS_NO_CARD` on exFAT), 4 GiB per file, ASCII names
+  (firmware-side validation; hosts should sanitize upload names and
+  say so).
