@@ -1,3 +1,69 @@
+# Alchemy SDK v0.10.0 — 2026-08-19
+
+Modules can now ship their own documentation, and the descriptor build
+stopped failing quietly.
+
+## Interactive manual support (#21)
+
+- Firmware can carry its own manual. `.Help()` attaches prose to knobs,
+  buttons, settings, pages, and jacks; `.SeeAlso()` makes typed
+  cross-references that resolve and validate at build time.
+- `alchemy::Jack` (`surface/jack.h`): pure descriptor metadata for a panel
+  jack: id, name, silk label, signal class, normalling. No runtime behavior,
+  no state, no schema-hash impact.
+- `alchemy::Manual` (`surface/manual.h`): module-level tagline, preamble, and
+  long-form sections, plus `stock_help` for the features the SDK owns
+  (presets, parameter locks, storage, brightness).
+- `VirtualButton::GestureHelp(key, md)` keys help to the gesture string passed
+  to `.Action()`; a key matching no declared gesture fails the build.
+- Settings slots gain identity: `.Ident()`, `.Name()`, `.Help()`, labeled
+  `Selector`, and per-page help.
+- Descriptor rendering no longer depends on the order of calls in `main()`.
+  Factory defaults are captured before the boot preset loads; the descriptor
+  renders once everything is declared.
+- A failed descriptor build reports its reason over the wire instead of
+  returning zero, so a bad cross-reference surfaces in the host rather than as
+  a module that silently claims to have no descriptor (protocol §5.2).
+- Additive on the wire; `dv` stays 1. Prose never reaches any schema hash, so
+  editing help text cannot invalidate a saved preset.
+
+## Calibrated VDDA for CV input volts (#22)
+
+- CV input voltage conversion uses the calibrated VDDA rather than the nominal
+  value.
+
+## ClipIndicator: SDK clipping light (#19)
+
+- `alchemy::ClipIndicator` (`anims/clip_indicator.h`) — audio-fed clip light
+  with a 98 % full-scale threshold, leaky-bucket transient suppression (a
+  one-sample graze no longer flashes the panel), and a 50 ms minimum hold that
+  retriggers while clipping persists. Feed `Process()` from the audio callback
+  (ISR-safe single-word handoff); everything else is wired by `loop.Use(clip)`
+  — detection ticks at the poll cadence, pips draw above the perf render.
+- Declares like a VirtualKnob, with good defaults (every pot pip, red, 50 ms):
+
+  ```cpp
+  static ClipIndicator clip = ClipIndicator()
+      .Hold(120.0f)
+      .Pots(kPotTopLeft, kPotTopRight)
+      .Buttons(kButtonB3);
+  ```
+
+  Also `Threshold`, `Suppression(samples, window_ms)`, `Accent`, `PipHour`,
+  `Color`, `AllPots`, and `SetEnabled()` for a settings toggle. Bespoke loops
+  call `Tick(dt_ms)` / `Draw(panel)` directly; `Draw(panel, color)` serves
+  palette-driven modules.
+- The sample scan runs as integer bit-pattern compares (abs = clear the sign
+  bit; IEEE ordering is monotonic), so the audio-side cost is ~7 integer
+  instructions per checked sample with no FPU flag transfers — and it probes
+  at a stride derived from the suppression config (`min_clipped_samples / 2`,
+  capped at 16; 4 for the default 8), with each hit counting as one stride of
+  samples. The derivation keeps the suppression contract intact at any
+  setting — a lone sub-stride burst can never reach the trigger — while the
+  scan gets proportionally cheaper as suppression relaxes, and exact when it
+  drops below 4. Non-finite samples (NaN/Inf) count as clipped — a broken
+  signal lights the alarm.
+
 # Alchemy SDK v0.9.0 — 2026-08-14
 
 The first versioned Alchemy SDK release, trying out a new cadence instead of merging PRs as I please.
