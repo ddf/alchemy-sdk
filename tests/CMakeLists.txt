@@ -22,4 +22,14 @@ target_link_libraries(cv_input_test PRIVATE alchemy::primitives)
 
 add_test(NAME cv_input COMMAND cv_input_test)
 
+add_executable(clock_follower_test clock_follower_test.cpp)
+target_link_libraries(clock_follower_test PRIVATE alchemy::primitives)
+
+add_test(NAME clock_follower COMMAND clock_follower_test)
+
+add_executable(pot_gate_test pot_gate_test.cpp)
+target_link_libraries(pot_gate_test PRIVATE alchemy::primitives)
+
+add_test(NAME pot_gate COMMAND pot_gate_test)
+
 add_subdirectory(host)

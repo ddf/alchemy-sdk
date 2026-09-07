@@ -18,6 +18,7 @@ add_executable(hostlink_tests
     hostlink_tests.cpp
     button_tests.cpp
     fs_tests.cpp
+    pager_nav_tests.cpp
     param_lock_tests.cpp
     ram_diskio.cpp
     "${SDK_ROOT}/framework/src/host_link/host_link.cpp"
@@ -33,6 +34,7 @@ add_executable(hostlink_tests
     "${SDK_ROOT}/framework/src/surface/preset_gesture_ui.cpp"
     "${SDK_ROOT}/framework/src/surface/virtual_knob.cpp"
     "${SDK_ROOT}/framework/src/control/param_lock_manager.cpp"
+    "${SDK_ROOT}/framework/src/control/musical_clock.cpp"
     "${SDK_ROOT}/hardware/alchemy-lab/v1/src/ws2812.cpp"
     "${SDK_ROOT}/hardware/alchemy-lab/v1/src/alchemy_lab_v1.cpp"
     "${SDK_ROOT}/hardware/alchemy-lab/v1/src/alchemy_lab_v1_layout.cpp"
