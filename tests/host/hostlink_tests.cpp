@@ -26,6 +26,7 @@
 #include "alchemy/host_link/frame.h"
 #include "alchemy/host_link/json_check.h"
 #include "alchemy/host_link/host_link.h"
+#include "alchemy/host_link/diagnostics.h"
 #include "alchemy/host_link/wire.h"
 #include "alchemy/hw/alchemy_lab.h"
 #include "alchemy/surface/page.h"
@@ -41,6 +42,7 @@
 #include "alchemy/surface/virtual_knob.h"
 
 #include "button_tests.h"
+#include "selector_tests.h"
 #include "fs_tests.h"
 #include "pager_nav_tests.h"
 #include "param_lock_tests.h"
@@ -425,6 +427,56 @@ static void TestDescriptorChunks(Fixture& fx)
     CHECK(got == kDesc);
 
     fx.link.SetDescriptor(nullptr, 0);
+}
+
+static void TestDescriptorReplacement()
+{
+    Fixture fx;
+    const std::string old_desc(3000, 'a');
+    const std::string new_desc(3000, 'b'); // same length, different CRC
+    fx.link.SetDescriptor(old_desc.data(), old_desc.size());
+    auto read = [&](uint32_t off) {
+        std::vector<uint8_t> req(6);
+        WrU32(req.data(), off);
+        WrU16(req.data() + 4, 1000u);
+        return Transact(fx, Cmd::GetDescriptor, req);
+    };
+    // Initial/static descriptors preserve arbitrary offset reads.
+    CHECK_EQ(read(1000).body[0], uint8_t(Status::Ok));
+    const Resp first = read(0);
+    CHECK_EQ(first.body[0], uint8_t(Status::Ok));
+    CHECK_EQ(RdU16(first.body.data() + 5), 1000u);
+    CHECK(std::memcmp(first.body.data() + 7, old_desc.data(), 1000) == 0);
+
+    fx.link.SetDescriptor(new_desc.data(), new_desc.size());
+    // HELLO reveals the new version but must not revive an old read.
+    const Resp hello = Transact(fx, Cmd::Hello, {});
+    CHECK_EQ(RdU32(hello.body.data() + 25), new_desc.size());
+    CHECK_EQ(RdU32(hello.body.data() + 29),
+             Crc32(reinterpret_cast<const uint8_t*>(new_desc.data()), new_desc.size()));
+    CHECK_EQ(read(1000).body[0], uint8_t(Status::BadState));
+    CHECK_EQ(read(2000).body[0], uint8_t(Status::BadState));
+
+    std::string got;
+    for (uint32_t off = 0; off < new_desc.size(); off += 1000u)
+    {
+        const Resp r = read(off);
+        CHECK_EQ(r.body[0], uint8_t(Status::Ok));
+        if (r.body.size() < 7u) break;
+        got.append(reinterpret_cast<const char*>(r.body.data() + 7),
+                   RdU16(r.body.data() + 5));
+    }
+    CHECK(got == new_desc);
+    // A repeated chunk is safe until another publication.
+    CHECK_EQ(read(1000).body[0], uint8_t(Status::Ok));
+
+    const std::string shorter(100, 'c');
+    fx.link.SetDescriptor(shorter.data(), shorter.size());
+    CHECK_EQ(read(2000).body[0], uint8_t(Status::BadState));
+    CHECK_EQ(RdU16(read(0).body.data() + 5), shorter.size());
+    fx.link.SetDescriptor(nullptr, 0);
+    CHECK_EQ(read(100).body[0], uint8_t(Status::BadState));
+    CHECK_EQ(RdU16(read(0).body.data() + 5), 0u);
 }
 
 static std::vector<uint8_t> LiveBytes(Fixture& fx)
@@ -1107,7 +1159,7 @@ static void TestAutoDescribe()
     CHECK(json.find("{\"kind\":\"linear\",\"lo\":0,\"hi\":24,\"unit\":\"dB\"}")
           != std::string::npos);
     CHECK(json.find("{\"kind\":\"snap\",\"labels\":[\"Digi\",\"BBD\",\"Tape\","
-                    "\"Vinyl\"]}")
+                    "\"Vinyl\"],\"bins\":4}")
           != std::string::npos);
     /* Positional id for the un-Ident()ed knob; raw .Disp() passthrough. */
     CHECK(json.find("\"id\":\"p0.1\",\"name\":\"Drive\"") != std::string::npos);
@@ -1158,6 +1210,64 @@ static bool IsErrorDescriptor(const char* buf, uint32_t len)
     const std::string j(buf, len);
     return j.find("\"error\":") != std::string::npos
         && j.find("\"components\":[]") != std::string::npos;
+}
+
+static void TestSelectorDisplayHints()
+{
+    SurfaceFixture sf;
+    const auto hash = sf.presets.LiveSchemaHash();
+    std::vector<uint8_t> before(sf.presets.LiveSize());
+    CHECK(sf.presets.SerializeLive(before.data(), before.size()) == before.size());
+
+    static const char* labels[] = {"A", "B", "C", "D", "E", "F", "G", "H"};
+    static const char* legacy = "{\"kind\":\"snap\",\"labels\":[\"Low\",\"High\"]}";
+    VirtualKnob labelled = VirtualKnob(0, "Labelled").Selector(8).Labels(labels, 8);
+    VirtualKnob numeric = VirtualKnob(1, "Numeric").Selector(8);
+    VirtualKnob custom = VirtualKnob(2, "Custom").Selector(8).Disp(legacy);
+    VirtualKnob single = VirtualKnob(3, "Single").Selector(0);
+    Page page(0);
+    page.Knobs(labelled, numeric, custom, single);
+    const Page* refs[] = {&page};
+    const PageSet pages{refs, 1};
+
+    char buf[16384];
+    const auto len = RenderDescriptor(buf, sizeof buf, kAutoInfo,
+                                     sf.presets, &pages, nullptr, 0);
+    CHECK(len > 0 && ValidJsonValue(buf, len));
+    const std::string json(buf, len);
+    CHECK(json.find("\"disp\":{\"kind\":\"snap\",\"labels\":[\"A\",\"B\",\"C\",\"D\","
+                    "\"E\",\"F\",\"G\",\"H\"],\"bins\":8}") != std::string::npos);
+    CHECK(json.find("\"disp\":{\"kind\":\"linear\",\"lo\":0,\"hi\":7,\"bins\":8}")
+          != std::string::npos);
+    CHECK(json.find("\"disp\":{\"kind\":\"linear\",\"lo\":0,\"hi\":0,\"bins\":1}")
+          != std::string::npos);
+    CHECK(json.find(std::string("\"disp\":") + legacy) != std::string::npos);
+    for (uint8_t pot = 0; pot < 4u; ++pot)
+    {
+        const auto start = json.find("\"id\":\"p0." + std::to_string(pot) + "\"");
+        CHECK(start != std::string::npos);
+        if (start == std::string::npos) continue;
+        const auto field = json.substr(start, json.find("\"disp\":", start) - start);
+        CHECK(field.find("\"type\":\"f32\"") != std::string::npos);
+        CHECK(field.find("\"off\":" + std::to_string(pot * 4u) + ",") != std::string::npos);
+    }
+    CHECK(sf.presets.LiveSchemaHash() == hash);
+    CHECK(sf.presets.LiveSize() == before.size());
+    std::vector<uint8_t> after(before.size());
+    CHECK(sf.presets.SerializeLive(after.data(), after.size()) == after.size());
+    CHECK(after == before);
+
+    // Labels that fitted before must not disappear just because bins was added.
+    static const char* long_labels[] = {
+        "Long selectorzone 00", "Long selectorzone 01", "Long selectorzone 02",
+        "Long selectorzone 03", "Long selectorzone 04", "Long selectorzone 05",
+        "Long selectorzone 06"};
+    labelled.Selector(7).Labels(long_labels, 7);
+    const auto long_len = RenderDescriptor(buf, sizeof buf, kAutoInfo,
+                                          sf.presets, &pages, nullptr, 0);
+    CHECK(long_len > 0 && ValidJsonValue(buf, long_len));
+    const std::string long_json(buf, long_len);
+    CHECK(long_json.find("Long selectorzone 06\"],\"bins\":7}") != std::string::npos);
 }
 
 static void TestAutoDescribeGenericAndOverrides()
@@ -1365,6 +1475,136 @@ static void TestManualValidation()
     }
 }
 
+static void TestManualCapacity()
+{
+    RamFlash flash;
+    Presets presets{g_dummy_qspi};
+    Pager pager(1, 1);
+    presets.Manage(pager);
+    presets.Init(flash.Ops(), flash.Base());
+
+    Manual manual;
+    char ids[17][12];
+    char buf[8192];
+    for (uint8_t i = 0; i < 17u; ++i)
+    {
+        std::snprintf(ids[i], sizeof ids[i], "section-%u", i);
+        manual.Section(ids[i], "Title", "Body");
+        const uint32_t len = RenderDescriptor(buf, sizeof buf, kAutoInfo,
+            presets, nullptr, nullptr, 0, nullptr, 0, nullptr, 0,
+            nullptr, 0, &manual);
+        if (i < 16u)
+        {
+            CHECK(!manual.Overflowed());
+            CHECK_EQ(manual.NumSections(), i + 1u);
+            CHECK(len > 0u && ValidJsonValue(buf, len));
+            CHECK(!IsErrorDescriptor(buf, len));
+            const std::string json(buf, len);
+            for (uint8_t j = 0; j <= i; ++j)
+                CHECK(json.find(std::string("\"id\":\"") + ids[j] + "\"")
+                      != std::string::npos);
+        }
+        else
+        {
+            CHECK(manual.Overflowed());
+            CHECK_EQ(manual.NumSections(), 16u);
+            CHECK(IsErrorDescriptor(buf, len));
+            CHECK(std::string(buf, len).find("manual: too many sections")
+                  != std::string::npos);
+        }
+
+        if (i == 15u)
+        {
+            // Section capacity does not relax the descriptor's byte limit.
+            char small[512];
+            const uint32_t n = RenderDescriptor(small, sizeof small, kAutoInfo,
+                presets, nullptr, nullptr, 0, nullptr, 0, nullptr, 0,
+                nullptr, 0, &manual);
+            CHECK(IsErrorDescriptor(small, n));
+            CHECK(std::string(small, n).find("descriptor buffer overflow")
+                  != std::string::npos);
+        }
+    }
+}
+
+static void TestPagerVisibility()
+{
+    RamFlash flash;
+    Presets presets{g_dummy_qspi};
+    Pager pager(2, 4);
+    const float phys[4] = {};
+    for (uint8_t pg = 0; pg < 2u; ++pg)
+        for (uint8_t p = 0; p < 4u; ++p)
+            pager.SetStored(pg, p, (pg * 4u + p) / 8.0f, phys);
+    presets.Manage(pager);
+    presets.Init(flash.Ops(), flash.Base());
+
+    VirtualKnob shared(0, "Shared");
+    VirtualKnob active = VirtualKnob(1, "Active").SeeAlso("spare");
+    VirtualKnob spare = VirtualKnob(2, "Unused").Ident("spare");
+    Page p0 = Page(0).Knobs(shared);
+    Page p1 = Page(1).Knobs(shared, active, spare);
+    Page outside = Page(7).HidePot(1);
+    const Page* refs[] = {nullptr, &p1, &outside, &p0};
+    const PageSet pages{refs, 4};
+
+    auto render = [&]() {
+        char buf[8192];
+        const uint32_t len = RenderDescriptor(buf, sizeof buf, kAutoInfo,
+                                              presets, &pages, nullptr, 0);
+        CHECK(len > 0u && ValidJsonValue(buf, len));
+        CHECK(!IsErrorDescriptor(buf, len));
+        return std::string(buf, len);
+    };
+    const std::string before = render();
+    CHECK(before.find("\"hidden\"") == std::string::npos);
+    const auto hash = presets.LiveSchemaHash();
+    uint8_t saved[32], after[32];
+    CHECK_EQ(presets.SerializeLive(saved, sizeof saved), sizeof saved);
+
+    // Shared, explicitly declared, and undeclared positions can all hide.
+    p1.HidePot(0).HidePot(2).HidePot(3).HidePot(255);
+    CHECK(!p1.PotHidden(255));
+    CHECK(!p1.PotHidden(1));
+    p1.HidePot(7);
+    CHECK(p1.PotHidden(7));
+    p1.HidePot(7, false);
+    CHECK(!p1.PotHidden(7));
+    std::string hidden = render();
+    for (uint8_t pg = 0; pg < 2u; ++pg)
+        for (uint8_t p = 0; p < 4u; ++p)
+        {
+            char position[32];
+            std::snprintf(position, sizeof position, "\"page\":%u,\"pot\":%u,", pg, p);
+            const size_t start = hidden.find(position);
+            CHECK(start != std::string::npos);
+            if (start == std::string::npos) continue;
+            const size_t end = hidden.find("{\"id\":", start);
+            const bool is_hidden = hidden.substr(start, end - start)
+                                       .find("\"hidden\":true") != std::string::npos;
+            CHECK(is_hidden == (pg == 1u && p != 1u));
+        }
+    // Removing just the new hints recovers the full original descriptor:
+    // same ids, offsets, defaults, types, references, and schema hash.
+    const std::string hint = ",\"hidden\":true";
+    for (size_t pos; (pos = hidden.find(hint)) != std::string::npos;)
+        hidden.erase(pos, hint.size());
+    CHECK(hidden == before);
+    CHECK_EQ(presets.LiveSchemaHash(), hash);
+    CHECK_EQ(presets.LiveSize(), sizeof saved);
+    CHECK_EQ(presets.SerializeLive(after, sizeof after), sizeof after);
+    CHECK(std::memcmp(saved, after, sizeof saved) == 0);
+
+    // Old preset bytes still restore the hidden slots exactly.
+    pager.SetStored(1, 2, 0.1f, phys);
+    CHECK(presets.DeserializeLive(saved, sizeof saved));
+    CHECK_EQ(presets.SerializeLive(after, sizeof after), sizeof after);
+    CHECK(std::memcmp(saved, after, sizeof saved) == 0);
+    p1.HidePot(0, false).HidePot(2, false).HidePot(3, false);
+    CHECK(render() == before);
+}
+
+
 static void TestManualHashStability()
 {
     SurfaceFixture sf;
@@ -1404,6 +1644,38 @@ static void TestManualHashStability()
 /* Ordering independence: defs decode from a factory image captured
  * before any preset load, so a render taken after a load is
  * byte-identical to one taken at factory state. */
+static void TestDescriptorBuildResult()
+{
+    SurfaceFixture sf;
+    char buf[16384];
+    bool succeeded = false;
+    auto render = [&](char* out, size_t cap, const PageSet* pages = nullptr) {
+        return RenderDescriptor(out, cap, kAutoInfo, sf.presets, pages,
+            nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, nullptr,
+            nullptr, 0, &succeeded);
+    };
+    const uint32_t good = render(buf, sizeof buf);
+    CHECK(succeeded && good > 0u);
+    CHECK(!IsErrorDescriptor(buf, good));
+    VirtualKnob knob = VirtualKnob(0, "Invalid").SeeAlso("missing-id");
+    Page page = Page(0).Knobs(knob);
+    const Page* refs[] = {&page};
+    const PageSet pages{refs, 1};
+    const uint32_t bad = render(buf, sizeof buf, &pages);
+    CHECK(bad > 0u); // error JSON is still useful at startup
+    CHECK(IsErrorDescriptor(buf, bad));
+    CHECK(!succeeded); // but must not replace a working runtime descriptor
+    CHECK(render(buf, sizeof buf) == good);
+    CHECK(succeeded); // retry recovers; failure does not latch in the builder
+    char small[512];
+    const uint32_t overflow = render(small, sizeof small);
+    CHECK(IsErrorDescriptor(small, overflow));
+    CHECK(!succeeded);
+    char tiny[1];
+    CHECK_EQ(render(tiny, sizeof tiny), 0u);
+    CHECK(!succeeded);
+}
+
 static void TestFactoryDefaultsImage()
 {
     SurfaceFixture sf;
@@ -1537,6 +1809,61 @@ static void TestButtonsEmission()
         {"btnmod", "Buttons", "0.0.1", "gitbtn", "0.1.0", "v1"},
         presets, nullptr, nullptr, 0, nullptr, 2);
     CHECK(IsErrorDescriptor(buf3, len3));
+}
+
+static void TestRootButtonGestures()
+{
+    SurfaceFixture sf;
+    using B = VirtualButton;
+    static const char* kLabels[] = {"Off", "On"};
+    const struct
+    {
+        B button;
+        const char* actions;
+    } cases[] = {
+        {B("root.tap", "Trigger")
+             .Tap(+[](void*) {}, "Fire")
+             .GestureHelp("tap", "Fire once."),
+         R"("actions":[{"gesture":"tap","label":"Fire","help":"Fire once."}])"},
+        {B("root.hold", "Reset")
+             .Hold(600, +[](void*) {}, "Reset")
+             .GestureHelp("hold", "Restore defaults."),
+         R"("actions":[{"gesture":"hold","label":"Reset","help":"Restore defaults."}])"},
+        {B("root.mixed", "Mode")
+             .Selector(kLabels)
+             .Tap(B::Action::Toggle)
+             .HoldSet(600, 0)
+             .GestureHelp("hold", "Turn off.")
+             .Action("hold+knob", "Record")
+             .GestureHelp("hold+knob", "Record motion."),
+         R"("actions":[{"gesture":"tap","label":"Toggle Off / On"},{"gesture":"hold","label":"Set Off","help":"Turn off."},{"gesture":"hold+knob","label":"Record","help":"Record motion."}])"},
+        {B("root.legacy", "Lock")
+             .Action("Long Press", "Record")
+             .GestureHelp("Long Press", "Record motion."),
+         R"("actions":[{"gesture":"Long Press","label":"Record","help":"Record motion."}])"},
+        /* Root metadata must not invent the bank's implicit tap. */
+        {B("root.bare", "Mode").Selector(kLabels), nullptr},
+    };
+
+    for (const auto& c : cases)
+    {
+        const B* refs[] = {&c.button};
+        char buf[16384];
+        const uint32_t len = RenderDescriptor(
+            buf, sizeof buf, kAutoInfo, sf.presets,
+            nullptr, nullptr, 0, refs, 1);
+        CHECK(len > 0u);
+        CHECK(!IsErrorDescriptor(buf, len));
+        const std::string json(buf, len);
+        const auto start = json.find("\"buttons\":[");
+        CHECK(start != std::string::npos);
+        if (start == std::string::npos) continue;
+        const auto root = json.substr(start);
+        if (c.actions)
+            CHECK(root.find(c.actions) != std::string::npos);
+        else
+            CHECK(root.find("\"actions\":") == std::string::npos);
+    }
 }
 
 /** Custom Serializable that emits per-kind metadata via ComponentWriter::Meta
@@ -2104,6 +2431,46 @@ static void TestPagerGoToPage()
     CHECK_EQ(pager.Page(), uint8_t{1});
 }
 
+static void TestDiagnosticsIntegration()
+{
+    Fixture fx;
+    Diagnostics debug;
+    debug.Info("Early boot");
+    CHECK(fx.link.Extend(debug));
+    CHECK(!fx.link.Extend(debug)); // duplicate command block is rejected
+    auto info = Transact(fx, Cmd::DiagInfo, U32Body(42));
+    CHECK(info.ok && info.body.size() == 32);
+    CHECK_EQ(RdU32(info.body.data() + 3), 42u);
+    auto slots = Transact(fx, Cmd::ListSlots, {});
+    CHECK(slots.ok && slots.body[1] == Presets::kNumSlots);
+    TestSetLive(fx); // diagnostics never consumes preset staging storage
+    TestGetLive(fx);
+
+    LoopTransport transport;
+    HostLink bare(transport, HostLink::Info{"diag", "Diagnostics", "1", "test", "test", 2, 0});
+    CHECK(bare.Extend(debug));
+    auto call = [&](Cmd cmd) {
+        uint8_t dec[kMaxDecoded], wire[kMaxWire];
+        FrameWriter w(dec); w.Begin(uint8_t(cmd), 99);
+        const size_t n = w.Encode(wire);
+        transport.Inject(wire, n); transport.tx.clear(); bare.Poll(0);
+        FrameParser parser; ParsedFrame f{}; std::vector<uint8_t> body;
+        for (auto b : transport.tx) if (parser.Push(b, f)) {
+            CHECK(f.ok); body.assign(f.body, f.body + f.len);
+        }
+        CHECK(!body.empty());
+        return body;
+    };
+    auto hello = call(Cmd::Hello);
+    CHECK_EQ(hello[3], 0u); CHECK_EQ(hello[4], 255u);
+    CHECK_EQ(RdU32(hello.data() + 17), 0u);
+    CHECK_EQ(RdU16(hello.data() + 35), 0u);
+    CHECK(call(Cmd::ListSlots) == std::vector<uint8_t>({0, 0}));
+    for (auto cmd : {Cmd::ReadSlot, Cmd::BlobBegin, Cmd::BlobData, Cmd::BlobCommit,
+                     Cmd::EraseSlot, Cmd::GetLive, Cmd::SaveToSlot, Cmd::LoadFromSlot})
+        CHECK_EQ(call(cmd)[0], uint8_t(Status::Unsupported));
+}
+
 /* ── Main ──────────────────────────────────────────────────────────── */
 
 int main(int argc, char** argv)
@@ -2111,9 +2478,11 @@ int main(int argc, char** argv)
     if (argc == 3 && std::string(argv[1]) == "--emit-golden")
         return EmitGolden(argv[2]);
 
+    TestDiagnosticsIntegration();
     TestCrc32();
     TestCobs();
     TestFrameRoundtrip();
+    TestDescriptorReplacement();
 
     {
         Fixture fx;
@@ -2130,12 +2499,17 @@ int main(int argc, char** argv)
     TestSettingsGesturesEmission();
     TestSettingsUseLocksDescriptor();
     TestAutoDescribe();
+    TestSelectorDisplayHints();
     TestAutoDescribeGenericAndOverrides();
     TestManualEmission();
     TestManualValidation();
     TestManualHashStability();
+    TestManualCapacity();
+    TestPagerVisibility();
     TestFactoryDefaultsImage();
+    TestDescriptorBuildResult();
     TestButtonsEmission();
+    TestRootButtonGestures();
     TestComponentMeta();
     TestJsonCheck();
     TestDescriptorJsonValidation();
@@ -2145,6 +2519,7 @@ int main(int argc, char** argv)
 
     RunParamLockTests(g_checks, g_failures);
     RunButtonTests(g_checks, g_failures);
+    RunSelectorTests(g_checks, g_failures);
     RunPagerNavTests(g_checks, g_failures);
     RunFsTests(g_checks, g_failures);
 

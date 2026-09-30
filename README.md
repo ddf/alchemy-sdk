@@ -116,7 +116,7 @@ There are ten jacks total. The middle six are field programmable to be CV in or 
 
 See [`cv_playground.cpp`](examples/cv_playground/cv_playground.cpp) for all of these in practice.
 
-**J1, J2** are codec audio inputs, AC-coupled. AC coupling blocks DC so absolute voltage can't be read, but rising edges pass cleanly, allowing for clocks and triggers. Use `RisingEdge()`. A use case may be you have a module that does not process input audio, in which case you could use these jacks for trigger inputs, to free up the other switchable jacks. Theoretically you could also set a low trigger threshold and get gate signals up to the length it takes the AC cap to debias the DC signal - some testing is required to see how long these gates could be.
+**J1, J2** are AC-coupled audio inputs with automatic trigger detection, no threshold setup. Call `hw.StartAudio(callback)`, or `hw.StartAudio()` for triggers alone, then read `RisingEdge()` in `OnPoll`. Each read clears the latch; multiple arrivals coalesce. These inputs detect fast positive transitions, not held gates or absolute voltage.
 
 **J3–J8** are the field programmable jacks. They can be mode changed with `EnableCvOutput()` which closes an analog switch to route the backing DAC (MCP4728 on J3–J6, STM DAC1 on J7–J8); `DisableCvOutput()` disconnects the DAC. This can be set at boot or changed live for unique firmware development opportunities.
 
@@ -126,8 +126,8 @@ See [`cv_playground.cpp`](examples/cv_playground/cv_playground.cpp) for all of t
 
 | Jack | Type | Output bits | Output latency | Input bits | Input latency | How to change |
 |------|------|-------------|----------------|------------|---------------|---------------|
-| J1 | Codec In | N/A | N/A | 1 | audio block | `SetTriggerThreshold(v)` |
-| J2 | Codec In | N/A | N/A | 1 | audio block | `SetTriggerThreshold(v)` |
+| J1 | Codec In | N/A | N/A | 1 | audio block | automatic |
+| J2 | Codec In | N/A | N/A | 1 | audio block | automatic |
 | J3 | Ext Dac | 12 | ~70 µs (I²C) | 16 | audio rate | `Enable/DisableCvOutput()` |
 | J4 | Ext Dac | 12 | ~70 µs (I²C) | 16 | audio rate | `Enable/DisableCvOutput()` |
 | J5 | Ext Dac | 12 | ~70 µs (I²C) | 16 | audio rate | `Enable/DisableCvOutput()` |
@@ -161,28 +161,25 @@ for free; adding field labels gets it a full descriptor-driven editor on
 the host with zero host-side code per module.
 
 ```cpp
-#include "alchemy/host_link/cdc_transport.h"
-#include "alchemy/host_link/host_link.h"
+#include "alchemy/host_link/host.h"
+#include "alchemy/host_link/diagnostics.h"
 
-static alchemy::hostlink::CdcUsbTransport transport;
-static uint8_t staging[alchemy::kPresetBlobCapacity]  DSY_SDRAM_BSS;
-static uint8_t snapshot[alchemy::kPresetBlobCapacity] DSY_SDRAM_BSS;
-static alchemy::hostlink::HostLink link(
-    transport, presets,
-    {.module_id="mymod", .module_name="My Module", .fw_version="1.0.0",
-     .fw_git=GIT_HASH, .sdk_version=ALCHEMY_SDK_VERSION,
-     .board=2, .boot_slot=0},
-    staging, snapshot, sizeof(staging));
+static alchemy::hostlink::Host host(
+    presets, "mymod", "My Module", "1.0.0", GIT_HASH);
+static alchemy::hostlink::Diagnostics debug; // optional
 
-transport.Init(hw.seed.usb_handle, daisy::UsbHandle::FS_EXTERNAL,
-               "Alchemy Lab");
-link.SetDescriptor(descriptor_json, descriptor_len);  // optional but recommended
-link.SetUid(mcu_uid);
-link.SetRebootHandler(&reboot, nullptr);
-
-// in the control loop (1 ms inner poll recommended):
-link.Poll(now_ms);   // pump + command execution
+// After hw.Init(), before loop.Tick():
+host.Extend(debug);
+loop.Use(host);
+debug.Info("Ready");
 ```
+
+The Host defaults transport, board-specific USB port, buffers, identity,
+and descriptor generation. For a diagnostics-only firmware, omit the
+`presets` constructor argument. See [USB diagnostics](docs/diagnostics.md)
+for messages, live values, CLI viewing, and the web programmer console.
+The lower-level transport and engine APIs remain available for custom
+integrations.
 
 All command execution happens in `Poll()` (the control-loop context),
 never the audio ISR, so host commands serialize naturally with on-device

@@ -66,9 +66,16 @@ class HostLink
     HostLink(IHostTransport& transport, Presets& presets, const Info& info,
              uint8_t* staging, uint8_t* snapshot, size_t buf_cap);
 
+    /** Identity, reboot and extensions without a preset store. HELLO
+     * reports zero slots/live size; preset operations are unsupported. */
+    HostLink(IHostTransport& transport, const Info& info);
+
     /** Attach the pre-rendered descriptor JSON (see DescriptorBuilder).
      *  Pass len = 0 to advertise "no descriptor".  The buffer must stay
-     *  valid for the lifetime of the link. */
+     *  valid and immutable until the next SetDescriptor(). Call only
+     *  on the Poll() thread. Replacing the bytes invalidates an ongoing
+     *  read: nonzero offsets return BadState until a new offset-zero
+     *  request. Hosts restart with HELLO and verify its length/CRC. */
     void SetDescriptor(const void* json, uint32_t len);
 
     /** 96-bit MCU unique id, reported in HELLO. */
@@ -119,12 +126,13 @@ class HostLink
     void AbortStage() { stage_open_ = false; stage_recv_ = 0u; }
 
     IHostTransport& transport_;
-    Presets&        presets_;
+    Presets*        presets_ = nullptr;
     Info            info_;
 
     const uint8_t* desc_     = nullptr;
     uint32_t       desc_len_ = 0u;
     uint32_t       desc_crc_ = 0u;
+    bool           desc_read_valid_ = true;
     uint8_t        uid_[12]  = {};
 
     FrameParser parser_;
@@ -133,8 +141,8 @@ class HostLink
     uint8_t     wire_[kMaxWire];           /* response, COBS-encoded   */
 
     /* Host→device staged blob (BLOB_BEGIN/DATA/COMMIT); caller-owned. */
-    uint8_t* staging_;
-    size_t   buf_cap_;
+    uint8_t* staging_ = nullptr;
+    size_t   buf_cap_ = 0u;
     bool     stage_open_    = false;
     uint8_t  stage_target_  = 0u;
     uint32_t stage_total_   = 0u;
@@ -143,7 +151,7 @@ class HostLink
     uint32_t stage_last_ms_ = 0u;
 
     /* Device→host live snapshot (GET_LIVE); caller-owned. */
-    uint8_t* snapshot_;
+    uint8_t* snapshot_ = nullptr;
     uint16_t snap_len_   = 0u;
     bool     snap_valid_ = false;
 
