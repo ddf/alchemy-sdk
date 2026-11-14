@@ -26,6 +26,7 @@
 #include "alchemy/host_link/frame.h"
 #include "alchemy/host_link/json_check.h"
 #include "alchemy/host_link/host_link.h"
+#include "alchemy/host_link/fast_values.h"
 #include "alchemy/host_link/diagnostics.h"
 #include "alchemy/host_link/wire.h"
 #include "alchemy/hw/alchemy_lab.h"
@@ -38,6 +39,7 @@
 #include "alchemy/surface/preset_name.h"
 #include "alchemy/surface/presets.h"
 #include "alchemy/surface/settings.h"
+#include "alchemy/midi/mono_settings.h"
 #include "alchemy/surface/virtual_button.h"
 #include "alchemy/surface/virtual_knob.h"
 
@@ -85,6 +87,9 @@ struct LoopTransport : IHostTransport
 {
     std::deque<uint8_t>  rx;
     std::vector<uint8_t> tx;
+    uint32_t generation = 0;
+
+    uint32_t ReadGeneration() const override { return generation; }
 
     size_t Read(uint8_t* dst, size_t max) override
     {
@@ -148,6 +153,7 @@ template <uint8_t N>
 struct TestComp : Serializable
 {
     float    vals[N] = {};
+    mutable unsigned captures = 0;
     uint32_t hash;
 
     explicit TestComp(uint32_t h) : hash(h) {}
@@ -155,6 +161,7 @@ struct TestComp : Serializable
     size_t SerializedSize() const override { return N * sizeof(float); }
     void   Serialize(uint8_t* out) const override
     {
+        ++captures;
         std::memcpy(out, vals, sizeof(vals));
     }
     bool Deserialize(const uint8_t* in) override
@@ -505,6 +512,102 @@ static void TestGetLive(Fixture& fx)
     CHECK(std::memcmp(r.body.data() + 14, live.data(), live.size()) == 0);
 }
 
+static void TestFastMirror()
+{
+    Fixture fx;
+    CHECK(Transact(fx, Cmd::GetFast, {}).body[0] == uint8_t(Status::Unsupported));
+    Pager pager(2, 3);
+    fx.presets.Manage(pager);
+    float physical[3] = {};
+    FastProjection slice{4, 4, &fx.comp_b.vals[1],
+        [](void* ctx, uint8_t* dst, uint16_t size) { std::memcpy(dst, ctx, size); },
+        [](void* ctx, uint16_t off, const uint8_t* src, uint16_t size) {
+            if (off || size != 4) return false;
+            std::memcpy(ctx, src, size);
+            return true;
+        }};
+    FastValues fast;
+    CHECK(fast.Add(pager));
+    CHECK(fast.Add(fx.comp_b, slice));
+    CHECK(fast.Prepare(fx.presets, physical, 3));
+    fx.link.SetFastValues(fast);
+
+    // Begin a slow snapshot, then record new data on the panel.
+    auto initial = LiveBytes(fx);
+    std::vector<uint8_t> slow(6);
+    WrU16(slow.data()+4, 4);
+    CHECK(Transact(fx, Cmd::GetLive, slow).body[0] == 0);
+    fx.comp_a.vals[2] = 0.875f;
+    const auto a = fx.comp_a.captures, b = fx.comp_b.captures;
+    auto fastRead = Transact(fx, Cmd::GetFast, {}).body;
+    CHECK_EQ(fastRead.size(), size_t(5 + 5 + 4 + 5 + 24));
+    CHECK_EQ(RdU32(fastRead.data()+1), fx.presets.LiveSchemaHash());
+    CHECK_EQ(RdU16(fastRead.data()+5), 20u);
+    CHECK_EQ(fastRead[9], 1u);
+    CHECK(std::memcmp(fastRead.data()+10, initial.data()+20, 4) == 0);
+    CHECK_EQ(RdU16(fastRead.data()+14), 32u);
+    CHECK(std::memcmp(fastRead.data()+19, initial.data()+32, 24) == 0);
+
+    std::vector<uint8_t> edit(10);
+    WrU32(edit.data(), fx.presets.LiveSchemaHash());
+    const float mix = 0.73f;
+    std::memcpy(edit.data()+6, &mix, 4);
+    WrU16(edit.data()+4, 48); // pager page 1, pot 1
+    CHECK(Transact(fx, Cmd::SetFast, edit).body[0] == 0);
+    CHECK(pager.Stored(1,1) == mix);
+    WrU16(edit.data()+4, 20);
+    CHECK(Transact(fx, Cmd::SetFast, edit).body[0] == 0);
+    CHECK(fx.comp_b.vals[1] == mix);
+    WrU16(edit.data()+4, 49);
+    CHECK(Transact(fx, Cmd::SetFast, edit).body[0] == uint8_t(Status::BadArgs));
+    WrU16(edit.data()+4, 8);
+    CHECK(Transact(fx, Cmd::SetFast, edit).body[0] == uint8_t(Status::BadArgs));
+    WrU32(edit.data(), 0);
+    CHECK(Transact(fx, Cmd::SetFast, edit).body[0] == uint8_t(Status::SchemaMismatch));
+    std::vector<uint8_t> begin(9);
+    begin[0] = kTargetLive;
+    WrU32(begin.data()+1, fx.presets.LiveSize());
+    WrU32(begin.data()+5, fx.presets.LiveSchemaHash());
+    CHECK(Transact(fx, Cmd::BlobBegin, begin).body[0] == 0);
+    CHECK(Transact(fx, Cmd::SetFast, edit).body[0] == uint8_t(Status::Busy));
+    fx.now_ms += 6000; // expire the transaction before continuing
+    CHECK(fx.comp_a.vals[2] == 0.875f);
+    CHECK_EQ(fx.comp_a.captures, a);
+    CHECK_EQ(fx.comp_b.captures, b); // slice never invokes whole-owner Serialize
+
+    WrU32(slow.data(), 4);
+    WrU16(slow.data()+4, 128);
+    auto tail = Transact(fx, Cmd::GetLive, slow).body;
+    CHECK(std::memcmp(tail.data()+14, initial.data()+4, initial.size()-4) == 0);
+
+    FastValues readOnly;
+    CHECK(readOnly.Add(fx.comp_a));
+    CHECK(readOnly.Prepare(fx.presets, nullptr, 0));
+    fx.link.SetFastValues(readOnly);
+    CHECK(Transact(fx, Cmd::GetFast, {}).body[9] == 0);
+    WrU32(edit.data(), fx.presets.LiveSchemaHash());
+    CHECK(Transact(fx, Cmd::SetFast, edit).body[0] == uint8_t(Status::Unsupported));
+
+    FastValues overlap;
+    CHECK(overlap.Add(fx.comp_b) && overlap.Add(fx.comp_b, slice));
+    CHECK(!overlap.Prepare(fx.presets, physical, 3));
+    slice.offset = 15;
+    FastValues outOfBounds;
+    CHECK(outOfBounds.Add(fx.comp_b, slice));
+    CHECK(!outOfBounds.Prepare(fx.presets, nullptr, 0));
+    TestComp<1> unmanaged(42);
+    FastValues missing;
+    CHECK(missing.Add(unmanaged) && !missing.Prepare(fx.presets, nullptr, 0));
+    struct Big : TestComp<1> {
+        Big() : TestComp<1>(123) {}
+        size_t SerializedSize() const override { return kMaxBody; }
+    } big;
+    fx.presets.Manage(big);
+    FastValues oversized;
+    CHECK(oversized.Add(big) && !oversized.Prepare(fx.presets, nullptr, 0));
+    CHECK(Transact(fx, Cmd::GetFast, {}).body[0] == uint8_t(Status::SchemaMismatch));
+}
+
 /** Full BLOB_BEGIN/DATA/COMMIT to @p target with @p payload. */
 static Status BlobWrite(Fixture& fx, uint8_t target,
                         const std::vector<uint8_t>& payload,
@@ -534,6 +637,28 @@ static Status BlobWrite(Fixture& fx, uint8_t target,
     r = Transact(fx, Cmd::BlobCommit,
                  U32Body(Crc32(payload.data(), payload.size())));
     return Status(r.body.empty() ? 255 : r.body[0]);
+}
+
+static void TestReceiveSession()
+{
+    Fixture fx;
+    TestGetLive(fx);
+    const auto blob = LiveBytes(fx);
+    std::vector<uint8_t> begin(9);
+    begin[0] = kTargetLive;
+    WrU32(begin.data() + 1, uint32_t(blob.size()));
+    WrU32(begin.data() + 5, fx.presets.LiveSchemaHash());
+    CHECK_EQ(Transact(fx, Cmd::BlobBegin, begin).body[0], uint8_t(Status::Ok));
+
+    ++fx.t.generation;
+    CHECK_EQ(Transact(fx, Cmd::BlobData, U32Body(0)).body[0], uint8_t(Status::BadState));
+    std::vector<uint8_t> read(6);
+    WrU32(read.data(), 4);
+    WrU16(read.data() + 4, 4);
+    CHECK_EQ(Transact(fx, Cmd::GetLive, read).body[0], uint8_t(Status::BadState));
+    CHECK_EQ(uint8_t(BlobWrite(fx, kTargetLive, blob, fx.presets.LiveSchemaHash())),
+             uint8_t(Status::Ok));
+    TestGetLive(fx);
 }
 
 static void TestSetLive(Fixture& fx)
@@ -1114,6 +1239,36 @@ struct FieldedComp : TestComp<N>
     }
 };
 
+static void TestPageColors()
+{
+    Page empty(0);
+    CHECK(empty.TabColor() == nullptr);
+
+    Page page(0);
+    page.Color(LedPanel::Rgb{0x00, 0xab, 0xff});
+    CHECK(std::strcmp(page.TabColor(), "#00abff") == 0);
+    Page copy(page);
+    page.Color(LedPanel::Rgb{0x00, 0x00, 0x00});
+    CHECK(std::strcmp(page.TabColor(), "#000000") == 0);
+    CHECK(std::strcmp(copy.TabColor(), "#00abff") == 0);
+
+    Page assigned(1);
+    {
+        Page source(0);
+        source.Color(LedPanel::Rgb{0x01, 0x23, 0x45});
+        assigned = source;
+        source.Color(LedPanel::Rgb{0xff, 0xff, 0xff});
+        CHECK(std::strcmp(source.TabColor(), "#ffffff") == 0);
+    }
+    CHECK(std::strcmp(assigned.TabColor(), "#012345") == 0);
+    assigned.Color("#AbC");
+    CHECK(std::strcmp(assigned.TabColor(), "#AbC") == 0);
+    assigned.Color(LedPanel::Rgb{0x67, 0x89, 0xab});
+    CHECK(std::strcmp(assigned.TabColor(), "#6789ab") == 0);
+    assigned.Color(nullptr);
+    CHECK(assigned.TabColor() == nullptr);
+}
+
 static void TestAutoDescribe()
 {
     SurfaceFixture sf;
@@ -1134,7 +1289,7 @@ static void TestAutoDescribe()
     VirtualKnob rawd   = VirtualKnob(0, "Raw")
                              .Disp("{\"kind\":\"percent\",\"scale\":110}");
 
-    Page p0 = Page(0).Name("Time").Color("#86efac");
+    Page p0 = Page(0).Name("Time").Color(LedPanel::Rgb{0x86, 0xef, 0xac});
     p0.Knobs(cutoff, drive, engine, plain);
     Page p1 = Page(1).Name("Space");
     p1.Knobs(rawd);
@@ -2354,6 +2509,14 @@ static void TestSettingsLoadCanonicalization()
     CHECK_EQ(sf.mode.Value(), uint8_t(3));     /* 4 zones → clamp to 3 */
     CHECK(sf.knob.Value() == 0.0f);
     CHECK(st.StoredNormAt(0, 1) == 0.0f);
+    const uint8_t zone = 1;
+    CHECK(st.SetSerializedField(0, &zone, 1, kPhys));
+    CHECK_EQ(sf.mode.Value(), zone);
+    CHECK(st.SetSerializedField(1, reinterpret_cast<const uint8_t*>(&knob_v), 4, kPhys));
+    CHECK(sf.knob.Value() == knob_v);
+    CHECK(!st.SetSerializedField(2, blob, 4, kPhys));
+    CHECK(!st.SetSerializedField(0, blob, 1, kPhys)); // invalid zone
+
 }
 
 /* Pager::GoToPage — direct page addressing for "home"-style gestures.
@@ -2473,22 +2636,82 @@ static void TestDiagnosticsIntegration()
 
 /* ── Main ──────────────────────────────────────────────────────────── */
 
+static void TestMidiSettingsPages()
+{
+    alchemy::midi::MonoOptions disabled; disabled.channel=0;
+    CHECK_EQ(disabled.Listening().channel_mask,0u);
+    CHECK_EQ(disabled.Part().listen.channel_mask,0u);
+    alchemy::midi::MonoOptions merge;
+    merge.pitch_gate=0; CHECK(!merge.Merge().midi_attacks && merge.Merge().cv_attacks);
+    merge.pitch_gate=1; CHECK(merge.Merge().midi_attacks && !merge.Merge().cv_attacks);
+    AlchemyLab hw;
+    Settings settings(hw);
+    settings.Page(0).Pot(0).Knob().Default(.25f);
+    const auto legacy_hash=settings.SchemaHash();
+    alchemy::midi::MonoSettings midi;
+    CHECK(!midi.Attach(settings,kSettingsMaxPages-1));
+    CHECK_EQ(settings.NumPages(),1u);
+    CHECK(midi.Attach(settings,6));
+    CHECK_EQ(settings.NumPages(),8u);
+    CHECK_EQ(settings.SerializedSize(),25u);
+    Presets descriptor_presets(hw.seed.qspi);
+    descriptor_presets.Manage(settings);
+    char eight_page_json[8192];
+    DescriptorBuilder descriptor(eight_page_json, sizeof(eight_page_json), descriptor_presets);
+    CHECK(descriptor.Begin({"eight_pages", "Eight pages", "test", "test", "test", "v2"}));
+    CHECK(descriptor.BeginSettings("settings", settings));
+    char ids[kSettingsMaxPages][kNumPots][16] = {};
+    for (uint8_t page = 0; page < settings.NumPages(); ++page) {
+        for (uint8_t pot = 0; pot < kNumPots; ++pot) {
+            if (!Settings::PersistedBytesFor(settings.KindAt(page, pot))) continue;
+            std::snprintf(ids[page][pot], sizeof(ids[page][pot]), "s.%u.%u", page, pot);
+            CHECK(descriptor.SettingsField(page, pot, ids[page][pot], ids[page][pot], nullptr));
+        }
+    }
+    CHECK(descriptor.EndSettings());
+    CHECK(descriptor.Finish() > 0);
+    CHECK(std::strstr(eight_page_json, "\"page\":7") != nullptr);
+    CHECK(settings.SchemaHash()!=legacy_hash);
+    CHECK(midi.Read().Valid());
+    std::vector<uint8_t> image(settings.SerializedSize());
+    settings.Serialize(image.data());
+    for (uint8_t channel=0;channel<18;++channel) {
+        midi.channel.Default(channel);
+        CHECK(midi.Read().Valid());
+        const auto mask=midi.Read().Listening().channel_mask;
+        CHECK_EQ(mask,channel==0 ? 0u : channel==1 ? 65535u : 1u<<(channel-2));
+    }
+    CHECK(settings.Deserialize(image.data()));
+    CHECK_EQ(midi.channel.Value(),1u);
+    CHECK(midi.Read().Part().listen.channel_mask==65535u);
+    for (uint8_t slide=0;slide<5;++slide) {
+        midi.slide.Default(slide);
+        CHECK((alchemy::midi::NotePart<1,16>::Validate(midi.Read().Part())));
+    }
+    auto invalid=midi.Read(); invalid.channel=255;
+    CHECK(!invalid.Valid()); CHECK_EQ(invalid.Part().listen.channel_mask,0u);
+    CHECK(invalid.Merge().pitch==alchemy::midi::PitchMerge::Cv);
+}
+
 int main(int argc, char** argv)
 {
     if (argc == 3 && std::string(argv[1]) == "--emit-golden")
         return EmitGolden(argv[2]);
 
+    TestMidiSettingsPages();
     TestDiagnosticsIntegration();
     TestCrc32();
     TestCobs();
     TestFrameRoundtrip();
     TestDescriptorReplacement();
+    TestReceiveSession();
 
     {
         Fixture fx;
         TestHello(fx);
         TestDescriptorChunks(fx);
         TestGetLive(fx);
+        TestFastMirror();
         TestSetLive(fx);
         TestSlotWriteReadList(fx);
         TestErrorPaths(fx);
@@ -2498,6 +2721,7 @@ int main(int argc, char** argv)
     TestDescriptorBuilder();
     TestSettingsGesturesEmission();
     TestSettingsUseLocksDescriptor();
+    TestPageColors();
     TestAutoDescribe();
     TestSelectorDisplayHints();
     TestAutoDescribeGenericAndOverrides();

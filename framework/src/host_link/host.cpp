@@ -27,14 +27,13 @@ namespace hostlink {
  * zeroed by startup. Readers stay within the length last written.
  * Factory defaults have dedicated storage: GET_LIVE reuses s_snapshot.
  * A refresh builds in scratch before touching the published descriptor. */
-static char    DSY_SDRAM_BSS s_descriptor[24u * 1024u];
+static char    DSY_SDRAM_BSS s_descriptor[kDefaultDescriptorCapacity];
 static char    DSY_SDRAM_BSS s_descriptor_refresh[sizeof s_descriptor];
 static uint8_t DSY_SDRAM_BSS s_factory[kPresetBlobCapacity];
 static uint8_t DSY_SDRAM_BSS s_staging [kPresetBlobCapacity];
 static uint8_t DSY_SDRAM_BSS s_snapshot[kPresetBlobCapacity];
 
 static CdcUsbTransport  s_cdc;
-static daisy::UsbHandle s_usb;
 
 static void DefaultReboot(uint8_t mode, void*)
 {
@@ -162,6 +161,18 @@ Host& Host::Extend(IHostlinkExtension& ext)
     return *this;
 }
 
+Host& Host::Fast(Serializable& source)
+{
+    if (started_ || !fast_.Add(source)) fast_ok_ = configuration_ok_ = false;
+    return *this;
+}
+
+Host& Host::Fast(Serializable& owner, FastProjection projection)
+{
+    if (started_ || !fast_.Add(owner, projection)) fast_ok_ = configuration_ok_ = false;
+    return *this;
+}
+
 void Host::OnAttach(ControlLoop& loop) { loop_ = &loop; }
 
 void Host::Start()
@@ -195,11 +206,11 @@ void Host::Start()
          * exposes the Seed's onboard port.  The product string is what
          * the OS and the browser's port picker display. */
 #if defined(ALCHEMY_BOARD_V2)
-        s_cdc.Init(s_usb, daisy::UsbHandle::FS_EXTERNAL,
-                   product_ ? product_ : name_);
+        configuration_ok_ = s_cdc.Init( daisy::UsbHandle::FS_EXTERNAL,
+                   product_, name_) && configuration_ok_;
 #else
-        s_cdc.Init(s_usb, daisy::UsbHandle::FS_INTERNAL,
-                   product_ ? product_ : name_);
+        configuration_ok_ = s_cdc.Init( daisy::UsbHandle::FS_INTERNAL,
+                   product_, name_) && configuration_ok_;
 #endif
         transport_ = &s_cdc;
     }
@@ -217,6 +228,12 @@ void Host::Start()
             *transport_, *presets_, info, staging_, snapshot_, buf_cap_);
     else
         link_ = new (link_storage_) HostLink(*transport_, info);
+
+    if (!fast_.Empty()) {
+        if (fast_ok_ && presets_ && fast_.Prepare(*presets_, loop_ ? loop_->Phys() : nullptr, kNumPots))
+            link_->SetFastValues(fast_);
+        else configuration_ok_ = false;
+    }
 
     if (manual_desc_)
     {

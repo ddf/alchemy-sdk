@@ -46,7 +46,7 @@ class Presets;
 constexpr uint32_t kDefaultSettingsHoldMs = 2000u;
 
 /** Maximum settings pages. */
-constexpr uint8_t  kSettingsMaxPages      = 4u;
+constexpr uint8_t  kSettingsMaxPages      = 8u;
 
 /** Default color used by Render() to paint B1 while settings is active. */
 constexpr LedPanel::Rgb kSettingsDefaultIndicator = {0xFF, 0x50, 0x00};
@@ -236,6 +236,9 @@ class Settings : public Serializable
     void     Serialize  (uint8_t* out) const override;
     bool     Deserialize(const uint8_t* in)  override;
     uint32_t SchemaHash () const override;
+
+    /** Apply exactly one persisted scalar through the settings control path. */
+    bool SetSerializedField(uint16_t offset, const uint8_t* data, size_t size, const float* phys);
 
     /** ── Introspection (HostLink descriptor generation) ──── */
 

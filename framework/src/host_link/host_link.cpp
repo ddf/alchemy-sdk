@@ -4,6 +4,7 @@
  */
 
 #include "alchemy/host_link/host_link.h"
+#include "alchemy/host_link/fast_values.h"
 
 #include <cstring>
 #include "alchemy/host_link/crc32.h"
@@ -105,6 +106,14 @@ void HostLink::Poll(uint32_t now_ms)
     {
         const size_t n = transport_.Read(rx_buf_, sizeof(rx_buf_));
         if (n == 0u) break;
+        const uint32_t generation = transport_.ReadGeneration();
+        if (generation != read_generation_)
+        {
+            read_generation_ = generation;
+            parser_.Reset();
+            AbortStage();
+            snap_valid_ = false;
+        }
 
         for (size_t i = 0u; i < n; i++)
         {
@@ -148,6 +157,21 @@ void HostLink::Handle(const ParsedFrame& f, uint32_t now_ms)
         case Cmd::BlobData:      OnBlobData(f, now_ms);   break;
         case Cmd::BlobCommit:    OnBlobCommit(f);         break;
         case Cmd::EraseSlot:     OnEraseSlot(f);          break;
+        case Cmd::GetFast:
+        case Cmd::SetFast:
+        {
+            if (!fast_) { RespondStatus(f, Status::Unsupported); break; }
+            if (f.type == uint8_t(Cmd::SetFast) && stage_open_ && stage_target_ == kTargetLive)
+            {
+                RespondStatus(f, Status::Busy);
+                break;
+            }
+            FrameWriter w(dec_);
+            w.Begin(f.type | kRespFlag, f.seq);
+            fast_->Handle(f, w);
+            Send(w);
+            break;
+        }
         case Cmd::GetLive:       OnGetLive(f);            break;
         case Cmd::SaveToSlot:    OnSaveToSlot(f);         break;
         case Cmd::LoadFromSlot:  OnLoadFromSlot(f);       break;
